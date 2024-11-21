@@ -1,7 +1,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
-local Modules = ReplicatedStorage.Modules
+local Modules = ReplicatedStorage:WaitForChild("Modules")
 
 local ClientGun = require(Modules.Guns.ClientGun)
 local MiscUtils = require(Modules.Mega.Utils.Misc)

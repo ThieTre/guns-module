@@ -2,7 +2,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
-local Table = require(Modules.Mega.DataStructures.Table)
 
 local gunTools = ReplicatedStorage.Assets.Guns.Tools
 local scripts = script.Parent.Cloned

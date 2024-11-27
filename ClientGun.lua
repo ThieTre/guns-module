@@ -125,11 +125,7 @@ function ClientGun:_SetupEffects()
 	local gun = self.object
 	local handle = gun.Handle
 	self.fireSoundCache = ICache:new(handle.Fire, { parent = handle })
-	self.effectsManager = EffectsManager:new(
-		handle,
-		handle.FirePoint,
-		handle:FindFirstChild("Ejector")
-	)
+	self.effectsManager = EffectsManager:new(gun:GetDescendants())
 end
 
 -- =============== Firing ==============

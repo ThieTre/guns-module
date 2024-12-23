@@ -327,7 +327,6 @@ function ClientGun:ToggleAim(enabled: boolean)
 		else
 			zoomSettings.Offset = Strafer.CameraSettings.DefaultShoulder.Offset
 		end
-		--self._weldVis(self.weldFolder, 1)
 		self.humanoid.WalkSpeed *= self.settings.Gun.AimWalkSpeedAdj
 	else
 		self.isFullyAimed = false
@@ -345,7 +344,6 @@ function ClientGun:ToggleAim(enabled: boolean)
 			scopeTween:Play()
 			self.ui.Dot.Visible = true
 		end
-		--self._weldVis(self.weldFolder, 0)
 		self.humanoid.WalkSpeed /= self.settings.Gun.AimWalkSpeedAdj
 	end
 

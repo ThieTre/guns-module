@@ -77,7 +77,7 @@ local function onHeartbeat()
 	end
 
 	-- Determine burst
-	local n = (gun.settings.BurstSize or 1) - 1
+	local n = (gun.settings.Gun.BurstSize or 1) - 1
 	for i = 1, n do
 		task.wait(1 / gun.settings.Gun.FireRate)
 		gun:Fire(pos)

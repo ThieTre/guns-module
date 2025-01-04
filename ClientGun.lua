@@ -514,9 +514,14 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 			if distance > SETTINGS.MuffleStartDistance then
 				equalizer.Enabled = true
 				local delta = distance - SETTINGS.MuffleStartDistance
-				local muffleAdj = math.clamp(delta / 200, 0, 1) * -80
+				local muffleAdj = math.clamp(
+					delta / SETTINGS.MaxMuffleDistance,
+					0,
+					1
+				) * -80
 				equalizer.HighGain = muffleAdj
 				equalizer.MidGain = muffleAdj
+				equalizer.LowGain = -muffleAdj / 6
 			else
 				equalizer.Enabled = false
 			end

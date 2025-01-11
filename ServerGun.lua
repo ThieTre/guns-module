@@ -20,8 +20,8 @@ export type ServerGun = typeof(setmetatable({}, ServerGun))
 function ServerGun:new(object: Tool | Model)
 	self = self ~= ServerGun and self or setmetatable({}, ServerGun)
 	self.__servercaster = ServerCaster
-	self.remoteFunction = Instances.Modify.create("RemoteFunction", object)
-	self.remoteEvent = Instances.Modify.create("RemoteEvent", object)
+	self.remoteFunction = Instances.Modify.findOrCreateChild(object, "RemoteFunction")
+	self.remoteEvent = Instances.Modify.findOrCreateChild(object, "RemoteEvent")
 	self.__servercaster.new(self, object)
 	self.effectsManager = EffectsManager:new(
 		self.object.Handle,
@@ -40,12 +40,13 @@ function ServerGun:_Setup()
 
 	self:_SetupROFBucket()
 
-	-- Setup custom gun events
 	self.remoteFunction.OnServerInvoke = function(...)
 		return self:_OnServerInvoke(...)
 	end
 
-	self:_SetupModel()
+	if not self.object:HasTag("gun") then
+		self:_SetupModel()
+	end
 end
 
 function ServerGun:_SetupModel()
@@ -87,10 +88,7 @@ function ServerGun:_SetupROFBucket()
 	if gunSettings.FireMode == "Burst" then
 		-- Include burst delay in fire rate, be a little more leniate in bucket size
 		trueFireRate = gunSettings.BurstSize
-			/ (
-				(gunSettings.BurstSize / gunSettings.FireRate)
-				+ gunSettings.BurstDelay
-			)
+			/ ((gunSettings.BurstSize / gunSettings.FireRate) + gunSettings.BurstDelay)
 		leaniance *= 1.05
 	end
 	self.bucketSize = 0
@@ -119,17 +117,13 @@ function ServerGun:_OnCastEvent(...)
 		return
 	end
 
-	local rayResults: RaycastResult =
-		self.__servercaster._OnCastEvent(self, ...)
+	local rayResults: RaycastResult = self.__servercaster._OnCastEvent(self, ...)
 
 	for _, player in game.Players:GetPlayers() do
 		if player == self.player then
 			continue
 		end
-		self.remoteEvent:FireClient(
-			player,
-			(rayResults and rayResults.Distance) or nil
-		)
+		self.remoteEvent:FireClient(player, (rayResults and rayResults.Distance) or nil)
 	end
 
 	self.bucketSize += 1
@@ -148,11 +142,9 @@ function ServerGun:Reload()
 
 	-- Wait reload time
 	local cancelled = false
-	local cancelCon = self.object
-		:GetPropertyChangedSignal("Parent")
-		:Once(function()
-			cancelled = true
-		end)
+	local cancelCon = self.object:GetPropertyChangedSignal("Parent"):Once(function()
+		cancelled = true
+	end)
 	local start = tick()
 	while (tick() - start) < self.settings.Gun.ReloadTime do
 		task.wait()

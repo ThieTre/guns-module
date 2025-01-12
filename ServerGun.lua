@@ -15,7 +15,7 @@ local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 
 local ServerGun = setmetatable({}, { __index = ServerCaster })
 ServerGun.__index = ServerGun
-export type ServerGun = typeof(setmetatable({}, ServerGun))
+export type ServerGun = typeof(ServerGun)
 
 function ServerGun:new(object: Tool | Model)
 	self = self ~= ServerGun and self or setmetatable({}, ServerGun)

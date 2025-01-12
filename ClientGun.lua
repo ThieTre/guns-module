@@ -26,7 +26,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local ClientGun = setmetatable({}, { __index = ClientCaster })
 ClientGun.__index = ClientGun
-export type ClientGun = typeof(setmetatable({}, ClientGun))
+export type ClientGun = typeof(ClientGun)
 
 function ClientGun:new(tool: Tool): ClientGun
 	self = self ~= ClientGun and self or setmetatable({}, ClientGun)
@@ -108,8 +108,7 @@ function ClientGun:_SetupAnimations()
 
 	-- Time anims and sound
 	local reloadTime = self.settings.Gun.ReloadTime
-	self.handle.Reload.PlaybackSpeed = self.handle.Reload.TimeLength
-		/ reloadTime
+	self.handle.Reload.PlaybackSpeed = self.handle.Reload.TimeLength / reloadTime
 
 	repeat
 		task.wait()
@@ -283,8 +282,7 @@ function ClientGun:ToggleAim(enabled: boolean)
 	end
 	AMS:EndSprint()
 	local targetFOV = nil
-	local tweenInfo =
-		TweenInfo.new(self.settings.Gun.AimSpeed, Enum.EasingStyle.Linear)
+	local tweenInfo = TweenInfo.new(self.settings.Gun.AimSpeed, Enum.EasingStyle.Linear)
 
 	self.isAiming = enabled
 
@@ -322,8 +320,7 @@ function ClientGun:ToggleAim(enabled: boolean)
 			).Magnitude * 1.5
 			local crouchAdj = AMS.isCrouching and 0 or 1
 			-- Setup camera
-			zoomSettings.Offset =
-				CFrame.new(0.7, 1.2 * crouchAdj, -gunLength - 1)
+			zoomSettings.Offset = CFrame.new(0.7, 1.2 * crouchAdj, -gunLength - 1)
 		else
 			zoomSettings.Offset = Strafer.CameraSettings.DefaultShoulder.Offset
 		end
@@ -429,11 +426,7 @@ end
 
 function ClientGun:_Hold()
 	if self.isEquipped then
-		self.animManager["Hold"]:Play(
-			0.1,
-			nil,
-			1.6 * (self.humanoid.WalkSpeed / 16)
-		)
+		self.animManager["Hold"]:Play(0.1, nil, 1.6 * (self.humanoid.WalkSpeed / 16))
 	end
 end
 
@@ -441,8 +434,7 @@ end
 	Lock the torso to minimize weapon sway if necessary
 ]]
 function ClientGun:_RequestTorsoLock(enabled: boolean, ignoreHold: boolean?)
-	local isMoving = self.humanoid.RootPart.AssemblyLinearVelocity.Magnitude
-		> 1
+	local isMoving = self.humanoid.RootPart.AssemblyLinearVelocity.Magnitude > 1
 	local isSprinting, isCrouching = AMS.isSprinting, AMS.isCrouching
 	if enabled and not isCrouching and AMS.currentSpeed > 0 then
 		self.animManager["IdleHold"]:Stop()
@@ -472,11 +464,8 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	local remoteEvent: RemoteEvent = gun:WaitForChild("RemoteEvent")
 	local handle = gun:WaitForChild("Handle")
 
-	local effectsManager = EffectsManager:new(
-		handle,
-		handle.FirePoint,
-		handle:FindFirstChild("Ejector")
-	)
+	local effectsManager =
+		EffectsManager:new(handle, handle.FirePoint, handle:FindFirstChild("Ejector"))
 	effectsManager:UpdateGroup("Fire", { "Emitter" })
 
 	-- Setup sound cache
@@ -495,8 +484,7 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	remoteEvent.OnClientEvent:Connect(function(castDistance: number?)
 		-- Emitter distance
 		if castDistance then
-			emitter.Lifetime =
-				NumberRange.new(castDistance / emitter.Speed.Max)
+			emitter.Lifetime = NumberRange.new(castDistance / emitter.Speed.Max)
 		else
 			emitter.Lifetime = NumberRange.new(2)
 		end
@@ -505,8 +493,7 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 		local sound: Sound = soundCache:Get()
 		local success, err = pcall(function()
 			local equalizer = sound.EqualizerSoundEffect
-			local hrp =
-				PlayerUtils.waitForObjects(LocalPlayer, "HumanoidRootPart")
+			local hrp = PlayerUtils.waitForObjects(LocalPlayer, "HumanoidRootPart")
 			local distance = (handle.FirePoint.WorldPosition - hrp.Position).Magnitude
 			if distance > sound.RollOffMaxDistance then
 				return
@@ -514,11 +501,8 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 			if distance > SETTINGS.MuffleStartDistance then
 				equalizer.Enabled = true
 				local delta = distance - SETTINGS.MuffleStartDistance
-				local muffleAdj = math.clamp(
-					delta / SETTINGS.MaxMuffleDistance,
-					0,
-					1
-				) * -80
+				local muffleAdj = math.clamp(delta / SETTINGS.MaxMuffleDistance, 0, 1)
+					* -80
 				equalizer.HighGain = muffleAdj
 				equalizer.MidGain = muffleAdj
 				equalizer.LowGain = -muffleAdj / 6
@@ -556,8 +540,7 @@ function ClientGun._setupWelding(gun: Tool)
 	-- Attempt to find open slot. It might take a little time for
 	-- an overwritten tool to be destroyed so we have to wrap this in
 	-- a timed loop
-	local weldFolder =
-		InstModify.findOrCreateChild(character, "GunWelds", "Folder")
+	local weldFolder = InstModify.findOrCreateChild(character, "GunWelds", "Folder")
 	local slot = nil
 	for elapsed in MiscUtils.elapsed() do
 		task.wait()
@@ -619,10 +602,8 @@ function ClientGun._setupWelding(gun: Tool)
 	end
 	--weldModel.PrimaryPart = weldModel.PrimaryPart or weldModel:FindFirstChildWhichIsA('MeshPart')
 	weldModel.PrimaryPart = nil
-	local weldModelAttachment = InstModify.create(
-		"Attachment",
-		weldModel:FindFirstChildWhichIsA("BasePart")
-	)
+	local weldModelAttachment =
+		InstModify.create("Attachment", weldModel:FindFirstChildWhichIsA("BasePart"))
 	local center = weldModel:GetPivot()
 	--weldModelAttachment.WorldCFrame = center * CFrame.new(0.5, 0, -0.2)
 	weldModelAttachment.WorldCFrame = center

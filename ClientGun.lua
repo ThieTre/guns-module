@@ -461,8 +461,21 @@ function ClientGun._setupClient(gun: Tool)
 end
 
 function ClientGun._setupRemotes(gun: Tool | Model)
+	-- NOTE: for now we don't want to setup remotes
+	-- if the player is the owner
+	local owner
+	if gun.Parent:IsA("Backpack") then
+		owner = gun.Parent.Parent
+	else
+		owner = Players:GetPlayerFromCharacter(gun.Parent)
+	end
+	if owner == LocalPlayer then
+		return
+	end
+
 	local remoteEvent: RemoteEvent = gun:WaitForChild("RemoteEvent")
 	local handle = gun:WaitForChild("Handle")
+	local gunSettings = require(gun.Settings)
 
 	local effectsManager =
 		EffectsManager:new(handle, handle.FirePoint, handle:FindFirstChild("Ejector"))
@@ -471,10 +484,12 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	-- Setup sound cache
 	local fireTemplate = gun:WaitForChild("Handle").Fire
 	fireTemplate:WaitForChild("EqualizerSoundEffect")
+	if (gunSettings.Gun.BulletsPerShot or 1) > 1 then
+		fireTemplate.Volume /= gunSettings.Gun.BulletsPerShot
+	end
 	local soundCache = ICache:new(fireTemplate, { parent = handle })
 
 	-- Configure emitter
-	local gunSettings = require(gun.Settings)
 	local emitter: ParticleEmitter = handle.FirePoint.Emitter
 	local maxSpread = gunSettings.Caster.MaxSpread
 	emitter.SpreadAngle = Vector2.new(maxSpread)

@@ -47,7 +47,6 @@ function ClientGun:new(tool: Tool): ClientGun
 	-- Ui
 	self.ui = self.player.PlayerGui.Gun
 	self.hotbar = self.player.PlayerGui.HUD.Hotbar
-	--self.hotbar[self:_GetSlot()].Count.TextColor3 = Color3.new(1, 1, 1)
 
 	return self
 end
@@ -545,7 +544,7 @@ function ClientGun._setupWelding(gun: Tool)
 	end
 	local character, humanoid =
 		PlayerUtils.waitForObjects(owner, "Character", "Humanoid")
-
+	local torso = character.UpperTorso
 	-- Attempt to find open slot. It might take a little time for
 	-- an overwritten tool to be destroyed so we have to wrap this in
 	-- a timed loop
@@ -610,14 +609,12 @@ function ClientGun._setupWelding(gun: Tool)
 			end
 		end
 	end
-	--weldModel.PrimaryPart = weldModel.PrimaryPart or weldModel:FindFirstChildWhichIsA('MeshPart')
 	weldModel.PrimaryPart = nil
 	local weldModelAttachment = InstModify.create(
 		"Attachment",
 		weldModel:FindFirstChildWhichIsA("BasePart")
 	)
 	local center = weldModel:GetPivot()
-	--weldModelAttachment.WorldCFrame = center * CFrame.new(0.5, 0, -0.2)
 	weldModelAttachment.WorldCFrame = center
 	local weld: WeldConstraint = Instance.new("RigidConstraint")
 	weld.Attachment0 = character:WaitForChild("UpperTorso").BodyBackAttachment
@@ -647,7 +644,7 @@ function ClientGun._setupWelding(gun: Tool)
 		elseif gun.Parent == character then
 			setTransparency(1)
 		else
-			setTransparency(0)
+			setTransparency(torso.Transparency)
 		end
 	end
 
@@ -657,11 +654,15 @@ function ClientGun._setupWelding(gun: Tool)
 		if humanoid.Sit then
 			setTransparency(1)
 		else
-			setTransparency(0)
+			setTransparency(torso.Transparency)
 		end
 	end)
 
 	gun:GetPropertyChangedSignal("Parent"):Connect(evaluateWeld)
+
+	torso:GetPropertyChangedSignal("Transparency"):Connect(function()
+		evaluateWeld()
+	end)
 end
 
 return ClientGun

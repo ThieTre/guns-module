@@ -6,10 +6,13 @@ local Modules = ReplicatedStorage:WaitForChild("Modules")
 local ClientGun = require(Modules.Guns.ClientGun)
 local MiscUtils = require(Modules.Mega.Utils.Misc)
 local Logging = require(Modules.Mega.Logging)
+local PlayerSettings = require(Modules.Mega.Data.PlayerSettings)
 local AMS = require(Modules.AMS.Controller)
 local Strafer = require(Modules.Strafer)
 local ConnManager = require(Modules.Mega.Utils.ConnManager)
+local Damage = require(Modules.Damage.Damage)
 
+local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local LOG = Logging:new("Turrets.Server")
 
 local LocalPlayer = game.Players.LocalPlayer
@@ -24,8 +27,7 @@ local isFiring = false
 local mouseDown = false
 
 local camera = workspace.CurrentCamera
-local mobileCanvas =
-	LocalPlayer.PlayerGui:WaitForChild("Mobile"):WaitForChild("Gun")
+local mobileCanvas = LocalPlayer.PlayerGui:WaitForChild("Mobile"):WaitForChild("Gun")
 
 -- ============== Functions =============
 
@@ -34,11 +36,12 @@ local function setMouseDown(status: boolean)
 	AMS.actionLocks.sprinting = status
 end
 
-local function getHitFromViewport(x, y)
+local function getHitFromViewport()
+	local x, y = camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2
 	local ray = workspace.CurrentCamera:ViewportPointToRay(x, y)
 	local partHit, endPosition =
 		workspace:FindPartOnRay(Ray.new(ray.Origin, ray.Direction * 10000))
-	return endPosition
+	return endPosition, partHit
 end
 
 local function onHeartbeat()
@@ -48,20 +51,14 @@ local function onHeartbeat()
 
 	-- No auto re-fire if semi or burst
 	isFiring = true
-	if
-		gun.settings.Gun.FireMode == "Semi"
-		or gun.settings.Gun.FireMode == "Burst"
-	then
+	if gun.settings.Gun.FireMode == "Semi" or gun.settings.Gun.FireMode == "Burst" then
 		setMouseDown(false)
 	end
 
 	-- Get hit position
 	local pos
 	if isMobile then
-		pos = getHitFromViewport(
-			camera.ViewportSize.X / 2,
-			camera.ViewportSize.Y / 2
-		)
+		pos = getHitFromViewport()
 	else
 		pos = mouse.Hit.Position
 	end
@@ -69,11 +66,7 @@ local function onHeartbeat()
 	-- Fire gun
 	local success, err = pcall(gun.Fire, gun, pos)
 	if not success then
-		LOG:Error(
-			"Gun failed to fire for client %s: %s",
-			LocalPlayer.UserId,
-			err
-		)
+		LOG:Error("Gun failed to fire for client %s: %s", LocalPlayer.UserId, err)
 	end
 
 	-- Determine burst
@@ -158,6 +151,58 @@ local function setupDesktop()
 	)
 end
 
+local lastAutoInterval = tick()
+local function setupAutoshoot()
+	if not PlayerSettings:Lookup("AutoShoot", true) then
+		return
+	end
+	local thisInterval = tick()
+	lastAutoInterval = thisInterval
+	local isAutofiring = false
+	task.spawn(function()
+		while gun.isEquipped and thisInterval == lastAutoInterval do
+			if not PlayerSettings:Lookup("AutoShoot", true) then
+				task.wait(1)
+				continue
+			end
+			if isAutofiring then
+				task.wait(SETTINGS.PollRates.Firing)
+			else
+				task.wait(SETTINGS.PollRates.NotFiring)
+			end
+
+			-- Get hit position
+			local _pos, hit
+			if isMobile then
+				_pos, hit = getHitFromViewport()
+			else
+				hit = mouse.Target
+			end
+
+			if not hit then
+				mouseDown = false
+				isAutofiring = false
+				continue
+			end
+
+			local canDamage, options = Damage.canDamage({
+				Dealer = LocalPlayer,
+				Taker = hit,
+			})
+			if not canDamage or SETTINGS.filterAutoShoot(options.Taker) then
+				if isAutofiring then
+					mouseDown = false
+					isAutofiring = false
+				end
+				continue
+			end
+
+			mouseDown = true
+			isAutofiring = true
+		end
+	end)
+end
+
 local function onEquip()
 	-- Connections
 	connections:Add("heartbeat", RunService.Heartbeat:Connect(onHeartbeat))
@@ -169,8 +214,18 @@ local function onEquip()
 
 	-- Gun
 	gun:Equip()
+	local autoShootMode = SETTINGS.AutoShootMode
 	if isMobile then
 		mobileCanvas.Visible = true
+		setupMobile()
+		if table.find({ "Any", "Mobile" }, autoShootMode) then
+			setupAutoshoot()
+		end
+	else
+		setupDesktop()
+		if autoShootMode == "Any" then
+			setupAutoshoot()
+		end
 	end
 end
 

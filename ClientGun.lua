@@ -122,7 +122,9 @@ function ClientGun:_SetupEffects()
 	-- Firing
 	local gun = self.object
 	local handle = gun.Handle
-	self.fireSoundCache = ICache:new(handle.Fire, { parent = handle })
+	if handle:FindFirstChild("Fire") then
+		self.fireSoundCache = ICache:new(handle.Fire, { parent = handle })
+	end
 	self.effectsManager = EffectsManager:new(gun:GetDescendants())
 end
 
@@ -160,7 +162,20 @@ function ClientGun:_FireFunctionality(pos): boolean
 	local thisFire = tick()
 	self.lastFire = thisFire
 	self.currentAmmo -= 1
-	for i = 1, self.settings.Gun.BulletsPerShot or 1 do
+	for _ = 1, self.settings.Gun.BulletsPerShot or 1 do
+		if self.settings.Gun.LockProjectileDirection then
+			local barrelForward = self.firePoint.WorldCFrame.LookVector
+			local posDirection = (pos - self.firePoint.WorldPosition).Unit
+			local dot = barrelForward:Dot(posDirection)
+			local angle = math.deg(math.acos(math.clamp(dot, -1, 1)))
+
+			if angle > 5 then
+				local distance = (self.firePoint.WorldPosition - pos).Magnitude
+				if distance > 10 then
+					pos = (self.firePoint.WorldPosition + barrelForward * 10000)
+				end
+			end
+		end
 		self:Cast(pos, spreadAdj)
 	end
 
@@ -209,11 +224,14 @@ function ClientGun:_FireInterface()
 end
 
 function ClientGun:_FireEffects()
-	local sound = self.fireSoundCache:Get()
-	sound:Play()
-	sound.Ended:Connect(function()
-		self.fireSoundCache:Return(sound)
-	end)
+	if self.fireSoundCache then
+		local sound = self.fireSoundCache:Get()
+		sound:Play()
+		sound.Ended:Connect(function()
+			self.fireSoundCache:Return(sound)
+		end)
+	end
+
 	self.effectsManager:RunAll("Fire")
 end
 
@@ -479,12 +497,15 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	effectsManager:UpdateGroup("Fire", { "Emitter" })
 
 	-- Setup sound cache
-	local fireTemplate = gun:WaitForChild("Handle").Fire
-	fireTemplate:WaitForChild("EqualizerSoundEffect")
-	if (gunSettings.Gun.BulletsPerShot or 1) > 1 then
-		fireTemplate.Volume /= gunSettings.Gun.BulletsPerShot
+	local soundCache = nil
+	local fireTemplate = gun:WaitForChild("Handle"):FindFirstChild("Fire")
+	if fireTemplate then
+		fireTemplate:WaitForChild("EqualizerSoundEffect")
+		if (gunSettings.Gun.BulletsPerShot or 1) > 1 then
+			fireTemplate.Volume /= gunSettings.Gun.BulletsPerShot
+		end
+		soundCache = ICache:new(fireTemplate, { parent = handle })
 	end
-	local soundCache = ICache:new(fireTemplate, { parent = handle })
 
 	-- Configure emitter
 	local emitter: ParticleEmitter = handle.FirePoint.Emitter
@@ -500,36 +521,39 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 		else
 			emitter.Lifetime = NumberRange.new(2)
 		end
-
-		-- Configure and play sound
-		local sound: Sound = soundCache:Get()
-		local success, err = pcall(function()
-			local equalizer = sound.EqualizerSoundEffect
-			local hrp = PlayerUtils.waitForObjects(LocalPlayer, "HumanoidRootPart")
-			local distance = (handle.FirePoint.WorldPosition - hrp.Position).Magnitude
-			if distance > sound.RollOffMaxDistance then
-				return
+		if soundCache then
+			-- Configure and play sound
+			local sound: Sound = soundCache:Get()
+			local success, err = pcall(function()
+				local equalizer = sound.EqualizerSoundEffect
+				local hrp = PlayerUtils.waitForObjects(LocalPlayer, "HumanoidRootPart")
+				local distance = (handle.FirePoint.WorldPosition - hrp.Position).Magnitude
+				if distance > sound.RollOffMaxDistance then
+					return
+				end
+				if distance > SETTINGS.MuffleStartDistance then
+					equalizer.Enabled = true
+					local delta = distance - SETTINGS.MuffleStartDistance
+					local muffleAdj = math.clamp(
+						delta / SETTINGS.MaxMuffleDistance,
+						0,
+						1
+					) * -80
+					equalizer.HighGain = muffleAdj
+					equalizer.MidGain = muffleAdj
+					equalizer.LowGain = -muffleAdj / 6
+				else
+					equalizer.Enabled = false
+				end
+			end)
+			if not success then
+				LOG:Warning("Failed to configure distance equalizer: %s", err)
 			end
-			if distance > SETTINGS.MuffleStartDistance then
-				equalizer.Enabled = true
-				local delta = distance - SETTINGS.MuffleStartDistance
-				local muffleAdj = math.clamp(delta / SETTINGS.MaxMuffleDistance, 0, 1)
-					* -80
-				equalizer.HighGain = muffleAdj
-				equalizer.MidGain = muffleAdj
-				equalizer.LowGain = -muffleAdj / 6
-			else
-				equalizer.Enabled = false
-			end
-		end)
-		if not success then
-			LOG:Warning("Failed to configure distance equalizer: %s", err)
+			sound:Play()
+			sound.Ended:Connect(function()
+				soundCache:Return(sound)
+			end)
 		end
-		sound:Play()
-		sound.Ended:Connect(function()
-			soundCache:Return(sound)
-		end)
-
 		-- Run other effects
 		effectsManager:RunAll("Fire")
 	end)

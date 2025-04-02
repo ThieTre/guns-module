@@ -521,6 +521,11 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 		else
 			emitter.Lifetime = NumberRange.new(2)
 		end
+		if gunSettings.Caster.InheritParentSpeed then
+			local inherited = handle.AssemblyLinearVelocity.Magnitude
+			emitter.Speed =
+				NumberRange.new(gunSettings.Caster.ProjectileSpeed * inherited)
+		end
 		if soundCache then
 			-- Configure and play sound
 			local sound: Sound = soundCache:Get()

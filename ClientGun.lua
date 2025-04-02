@@ -216,7 +216,7 @@ end
 function ClientGun:_FireInterface()
 	local slot = self:_GetSlot()
 	self.hotbar[slot].Count.Text = math.floor(self.currentAmmo)
-	if self.currentAmmo / self.settings.Gun.Capacity <= 0.1 then
+	if self.currentAmmo / self.settings.Gun.Capacity <= 0.15 then
 		self.hotbar[slot].Count.TextColor3 = Color3.new(1, 0.376471, 0.376471)
 	else
 		self.hotbar[slot].Count.TextColor3 = Color3.new(1, 1, 1)
@@ -256,7 +256,10 @@ function ClientGun:Reload()
 	end
 	self:_ReloadEffects()
 	self:_ReloadFunctionality()
-	self.hotbar[self:_GetSlot()].Count.Text = self.currentAmmo
+
+	local slot = self:_GetSlot()
+	self.hotbar[slot].Count.Text = self.currentAmmo
+	self.hotbar[slot].Count.TextColor3 = Color3.new(1, 1, 1)
 end
 
 function ClientGun:_ReloadFunctionality()
@@ -281,14 +284,6 @@ end
 function ClientGun:_ReloadEffects()
 	-- Animations
 	self.animManager["Reload"]:Play(1, 1, self.reloadAnimSpeed)
-
-	-- Ui
-	local slot = self:_GetSlot()
-	if self.currentAmmo / self.settings.Gun.Capacity <= 0.1 then
-		self.hotbar[slot].Count.TextColor3 = Color3.new(1, 0.376471, 0.376471)
-	else
-		self.hotbar[slot].Count.TextColor3 = Color3.new(1, 1, 1)
-	end
 end
 
 -- =============== Aiming ==============

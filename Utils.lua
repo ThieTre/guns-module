@@ -33,4 +33,34 @@ function Utils.giveRandomGun(player: Player): Tool
 	return Utils.giveGun(player, toolName)
 end
 
+function Utils.getDamage(settings: {})
+	local base = settings.Damage.Damage
+	local mult = settings.Damage.TypeMultipliers.Vehicle or 1
+	local pellets = settings.BulletsPerShot or 1
+	return math.round(base * mult * pellets)
+end
+
+function Utils.getCycleTime(settings: {})
+	local rps = settings.Gun.FireRate
+	local cap = settings.Gun.Capacity
+	local reload = settings.Gun.ReloadTime
+	local timeToEmpty = (cap - 1) / rps
+	return math.round(timeToEmpty + reload)
+end
+
+function Utils.getDPS(settings: {})
+	local totalDamage = Utils.getDamage(settings) * settings.Gun.Capacity
+	local cycle = Utils.getCycleTime(settings)
+	return math.round(totalDamage / cycle)
+end
+
+function Utils.getMechanicalRPM(settings: {})
+	return math.round(settings.Gun.FireRate * 60)
+end
+
+function Utils.getEffectiveRPM(settings: {})
+	local cycle = Utils.getCycleTime(settings)
+	return math.round((settings.Gun.Capacity / cycle) * 60)
+end
+
 return Utils

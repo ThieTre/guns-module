@@ -55,6 +55,8 @@ function ServerGun:_SetupModel()
 	-- Setup model
 	for _, part: BasePart in self.object.Model:GetChildren() do
 		part.CanCollide = false
+		part.CanQuery = false
+		part.CanTouch = false
 	end
 
 	Instances.Modify.create(

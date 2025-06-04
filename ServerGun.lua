@@ -28,6 +28,7 @@ function ServerGun:new(object: Tool | Model)
 		self.object.Handle.FirePoint,
 		self.object.Handle:FindFirstChild("Ejector")
 	)
+	self.hasBeenFired = false
 	self.currentAmmo = self.settings.Gun.Capacity
 
 	return self
@@ -113,6 +114,18 @@ function ServerGun:_OnCastEvent(...)
 		return
 	end
 
+	if not self.hasBeenFired then
+		self.hasBeenFired = true
+		if SETTINGS.RemoveForceFieldOnFire then
+			if self.player.Character then
+				Instances.Modify.destroyExistingChild(
+					self.player.Character,
+					"ForceField"
+				)
+			end
+		end
+	end
+
 	self.currentAmmo -= 1 / self.bulletsPerShot -- decrease ammo count regardless of ROF violations
 	if self.bucketSize > self.maxBucketSize then
 		LOG:Warning("Cast event rejected due ROF violation")
@@ -156,6 +169,7 @@ function ServerGun:Reload()
 			return self.currentAmmo
 		end
 	end
+	cancelCon:Disconnect()
 
 	-- Fill ammo
 	self.currentAmmo = self.settings.Gun.Capacity

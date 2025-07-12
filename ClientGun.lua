@@ -36,6 +36,7 @@ function ClientGun:new(tool: Tool): ClientGun
 	self.handle = self.object.Handle
 	self.lastFire = 0
 	self.lastAimChange = 0
+	self.nextBarrelCount = 1
 	self.canAim = true
 	self.isAiming = false
 
@@ -233,6 +234,14 @@ function ClientGun:_FireEffects()
 	end
 
 	self.effectsManager:RunAll("Fire")
+
+	if self.settings.Gun.BarrelCount then
+		self.effectsManager:RunAll("FireBarrel" .. self.nextBarrelCount)
+		self.nextBarrelCount += 1
+		if self.nextBarrelCount > self.settings.Gun.BarrelCount then
+			self.nextBarrelCount = 1
+		end
+	end
 end
 
 function ClientGun:_CanFire()
@@ -486,9 +495,9 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	local remoteEvent: RemoteEvent = gun:WaitForChild("RemoteEvent")
 	local handle = gun:WaitForChild("Handle")
 	local gunSettings = require(gun.Settings)
+	local nextBarrelCount = 1
 
-	local effectsManager =
-		EffectsManager:new(handle, handle.FirePoint, handle:FindFirstChild("Ejector"))
+	local effectsManager = EffectsManager:new(gun:GetDescendants())
 	effectsManager:UpdateGroup("Fire", { "Emitter" })
 
 	-- Setup sound cache
@@ -556,6 +565,14 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 		end
 		-- Run other effects
 		effectsManager:RunAll("Fire")
+
+		if gunSettings.BarrelCount then
+			effectsManager:RunAll("FireBarrel" .. nextBarrelCount)
+			nextBarrelCount += 1
+			if nextBarrelCount > gunSettings.BarrelCount then
+				nextBarrelCount = 1
+			end
+		end
 	end)
 end
 

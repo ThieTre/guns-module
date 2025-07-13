@@ -65,6 +65,14 @@ function ServerGun:_SetupModel()
 		self.object.Handle.Fire,
 		{ LowGain = 0, MidGain = 0 }
 	)
+
+	-- Adjust reload sound duration
+	local handle = self.object:WaitForChild("Handle", 3)
+	if not handle.Reload.IsLoaded then
+		handle.Reload.Loaded:Wait()
+	end
+	local reloadTime = self.settings.Gun.ReloadTime
+	handle.Reload.PlaybackSpeed = handle.Reload.TimeLength / reloadTime
 end
 
 function ServerGun:_OnServerInvoke(player: Player, typ: string, ...)

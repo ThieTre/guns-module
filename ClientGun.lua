@@ -106,16 +106,14 @@ function ClientGun:_SetupAnimations()
 		end
 	end)
 
-	-- Time anims and sound
-	local reloadTime = self.settings.Gun.ReloadTime
-	self.handle.Reload.PlaybackSpeed = self.handle.Reload.TimeLength / reloadTime
-
+	-- Adjust animation speed
 	repeat
 		task.wait()
 	until self.animManager["Reload"].Length > 0
 	repeat
 		task.wait()
 	until self.animManager["Equip"].Length > 0
+	local reloadTime = self.settings.Gun.ReloadTime
 	self.reloadAnimSpeed = self.animManager["Reload"].Length / reloadTime
 end
 

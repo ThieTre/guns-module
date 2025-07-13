@@ -1,9 +1,9 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
 
-local gunTools = ReplicatedStorage.Assets.Guns.Tools
 local scripts = script.Parent.Cloned
 
 local LOG = Logging:new("Guns.Utils")
@@ -16,7 +16,8 @@ local Utils = {}
 
 function Utils.giveGun(player: Player, name: string): Tool
 	-- Give tool
-	local tool = gunTools[name]:Clone()
+	local assets = ServerStorage.Assets.Guns.Tools
+	local tool = assets[name]:Clone()
 	tool.Parent = player.Backpack
 	for _, scriptName in { "Server", "Client" } do
 		local scriptClone = scripts[scriptName]:Clone()
@@ -28,7 +29,8 @@ function Utils.giveGun(player: Player, name: string): Tool
 end
 
 function Utils.giveRandomGun(player: Player): Tool
-	local gunOptions = gunTools:GetChildren()
+	local assets = ServerStorage.Assets.Guns.Tools
+	local gunOptions = assets:GetChildren()
 	local toolName = gunOptions[math.random(#gunOptions)].Name
 	return Utils.giveGun(player, toolName)
 end

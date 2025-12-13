@@ -13,13 +13,15 @@ local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 ---------------------- Server Gun -------------------------
 -----------------------------------------------------------
 
-local ServerGun = setmetatable({}, { __index = ServerCaster })
+local ServerGun = setmetatable(
+	{ __servercaster = ServerCaster },
+	{ __index = ServerCaster }
+)
 ServerGun.__index = ServerGun
 export type ServerGun = typeof(ServerGun)
 
 function ServerGun:new(object: Tool | Model)
 	self = self ~= ServerGun and self or setmetatable({}, ServerGun)
-	self.__servercaster = ServerCaster
 	self.remoteFunction = Instances.Modify.findOrCreateChild(object, "RemoteFunction")
 	self.remoteEvent = Instances.Modify.findOrCreateChild(object, "RemoteEvent")
 	self.__servercaster.new(self, object)
@@ -30,6 +32,7 @@ function ServerGun:new(object: Tool | Model)
 	)
 	self.hasBeenFired = false
 	self.currentAmmo = self.settings.Gun.Capacity
+	self.castType = self.settings.Caster.Type
 
 	return self
 end
@@ -38,6 +41,12 @@ function ServerGun:_Setup()
 	self.bulletsPerShot = self.settings.Gun.BulletsPerShot or 1
 
 	self.__servercaster._Setup(self)
+
+	local emitterAttach = self.firePoint:FindFirstChild("EmitterAttachment")
+	if emitterAttach then
+		local emitter = self.firePoint.EmitterAttachment.Emitter
+		emitter:SetAttribute("EmitCount", self.bulletsPerShot)
+	end
 
 	self:_SetupROFBucket()
 
@@ -51,8 +60,6 @@ function ServerGun:_Setup()
 end
 
 function ServerGun:_SetupModel()
-	self.object:AddTag("gun")
-
 	-- Setup model
 	for _, part: BasePart in self.object.Model:GetChildren() do
 		part.CanCollide = false
@@ -73,6 +80,8 @@ function ServerGun:_SetupModel()
 	end
 	local reloadTime = self.settings.Gun.ReloadTime
 	handle.Reload.PlaybackSpeed = handle.Reload.TimeLength / reloadTime
+
+	self.object:AddTag("gun")
 end
 
 function ServerGun:_OnServerInvoke(player: Player, typ: string, ...)
@@ -89,6 +98,8 @@ function ServerGun:_ResolveOwnership()
 	end
 	self.rayParameters.FilterDescendantsInstances =
 		{ self.object, self.player.Character }
+
+	self.__servercaster._ResolveOwnership(self)
 end
 
 function ServerGun:_SetupROFBucket()
@@ -107,19 +118,19 @@ function ServerGun:_SetupROFBucket()
 		* self.bulletsPerShot
 	task.spawn(function()
 		-- Refill bucket
-		while true do
+		while self.object.Parent do
 			task.wait(refillWindow)
 			self.bucketSize = 0
 		end
 	end)
 end
 
-function ServerGun:_OnCastEvent(...)
+function ServerGun:_OnCastEvent(...): boolean
 	if self.currentAmmo <= 0 then
 		-- Ammo mismatch between server and client should never happen
 		-- unless a player is exploiting
 		LOG:Debug("Cast event rejected due to no remaining ammo")
-		return
+		return false
 	end
 
 	if not self.hasBeenFired then
@@ -135,21 +146,54 @@ function ServerGun:_OnCastEvent(...)
 	end
 
 	self.currentAmmo -= 1 / self.bulletsPerShot -- decrease ammo count regardless of ROF violations
-	if self.bucketSize > self.maxBucketSize then
-		LOG:Warning("Cast event rejected due ROF violation")
-		return
+	local isValid = self:_CheckROF()
+	if not isValid then
+		return false
 	end
 
-	local rayResults: RaycastResult = self.__servercaster._OnCastEvent(self, ...)
+	if self.castType ~= "Self" then
+		local rayResults: RaycastResult = self.__servercaster._OnCastEvent(self, ...)
 
-	for _, player in game.Players:GetPlayers() do
-		if player == self.player then
-			continue
+		for _, player in game.Players:GetPlayers() do
+			if player == self.player then
+				continue
+			end
+			local distance = self.remoteEvent:FireClient(
+				player,
+				(rayResults and rayResults.Distance) or nil
+			)
 		end
-		self.remoteEvent:FireClient(player, (rayResults and rayResults.Distance) or nil)
 	end
 
 	self.bucketSize += 1
+
+	if self.currentAmmo <= 0 then
+		task.spawn(function()
+			self.remoteFunction:InvokeClient(self.player, "Reload")
+		end)
+	end
+
+	return true
+end
+
+function ServerGun:_OnHitEvent(player, ...)
+	if self.castType == "Self" then
+		-- No cast event is ever fired so we have to validate
+		-- cast here
+		local canCast = self:_OnCastEvent()
+		if not canCast then
+			return
+		end
+	end
+	self.__servercaster._OnHitEvent(self, player, ...)
+end
+
+function ServerGun:_CheckROF(): boolean
+	if self.bucketSize > self.maxBucketSize then
+		LOG:Warning("Cast event rejected due ROF violation")
+		return false
+	end
+	return true
 end
 
 function ServerGun:Reload()
@@ -163,6 +207,8 @@ function ServerGun:Reload()
 
 	self.effectsManager:RunAll("Reload")
 
+	self:_SetHiddenParts(false)
+
 	-- Wait reload time
 	local cancelled = false
 	local cancelCon = self.object:GetPropertyChangedSignal("Parent"):Once(function()
@@ -174,6 +220,7 @@ function ServerGun:Reload()
 		if cancelled then
 			self.isReloading = false
 			self.effectsManager["Reload"]:Stop()
+			self:_SetHiddenParts(true)
 			return self.currentAmmo
 		end
 	end
@@ -183,7 +230,25 @@ function ServerGun:Reload()
 	self.currentAmmo = self.settings.Gun.Capacity
 	self.isReloading = false
 
+	self:_SetHiddenParts(true)
+
 	return self.currentAmmo
+end
+
+function ServerGun:_SetHiddenParts(visible: boolean)
+	for _, p in self.object.Model:GetChildren() do
+		if not p:IsA("BasePart") or not p:GetAttribute("HideOnReload") then
+			continue
+		end
+		if visible then
+			p.Transparency = p:GetAttribute("_BaseTransparency") or 0
+		else
+			if p.Transparency ~= 0 and not p:GetAttribute("_BaseTransparency") then
+				p:SetAttribute("_BaseTransparency", p.Transparency)
+			end
+			p.Transparency = 1
+		end
+	end
 end
 
 return ServerGun

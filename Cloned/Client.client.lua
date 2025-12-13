@@ -4,6 +4,23 @@ local UIS = game:GetService("UserInputService")
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 
 local ClientGun = require(Modules.Guns.ClientGun)
+
+local LocalPlayer = game.Players.LocalPlayer
+
+-- ============== Non-owning player =============
+
+local tool: Tool = script.Parent
+local isOwner = (
+	tool:IsDescendantOf(LocalPlayer.Backpack)
+	or tool:IsDescendantOf(LocalPlayer.Character)
+)
+if not isOwner then
+	ClientGun._setupClient(tool)
+	return
+end
+
+-- ============== Owning Player =============
+
 local MiscUtils = require(Modules.Mega.Utils.Misc)
 local Logging = require(Modules.Mega.Logging)
 local PlayerSettings = require(Modules.Mega.Data.PlayerSettings)
@@ -13,14 +30,13 @@ local ConnManager = require(Modules.Mega.Utils.ConnManager)
 local Damage = require(Modules.Damage.Damage)
 
 local SETTINGS = require(ReplicatedStorage.Settings.Guns)
-local LOG = Logging:new("Turrets.Server")
+local LOG = Logging:new("Guns.Client")
+local AUTOSHOOT_SETTINGS = SETTINGS.AutoShoot
 
-local LocalPlayer = game.Players.LocalPlayer
 local mouse = LocalPlayer:GetMouse()
 local isMobile = MiscUtils.getClientPlatform() == "Mobile"
 
 local connections = ConnManager:new()
-local tool: Tool = script.Parent
 local gun = ClientGun:new(tool)
 
 local isFiring = false
@@ -28,6 +44,14 @@ local mouseDown = false
 
 local camera = workspace.CurrentCamera
 local mobileCanvas = LocalPlayer.PlayerGui:WaitForChild("Mobile"):WaitForChild("Gun")
+
+-- shape cast cache
+local shapeCastParams: RaycastParams? = nil
+if AUTOSHOOT_SETTINGS then
+	shapeCastParams = RaycastParams.new()
+	shapeCastParams.FilterType = Enum.RaycastFilterType.Exclude
+	shapeCastParams.FilterDescendantsInstances = { LocalPlayer.Character }
+end
 
 -- ============== Functions =============
 
@@ -44,32 +68,118 @@ local function getHitFromViewport()
 	return endPosition, partHit
 end
 
+local function getHitFromCone(): (Vector3?, Instance?)
+	if not shapeCastParams then
+		return nil, nil
+	end
+
+	local baseOrigin = camera.CFrame.Position
+	local direction = camera.CFrame.LookVector
+
+	local gunMax = gun.settings.Caster.MaxDistance
+	local globalMax = AUTOSHOOT_SETTINGS.MaxLength or 10000
+	local maxDistance = math.max(0, math.min(gunMax or globalMax, globalMax))
+	if maxDistance <= 0 then
+		return nil, nil
+	end
+
+	do
+		local rayHit =
+			workspace:Raycast(baseOrigin, direction * maxDistance, shapeCastParams)
+		if rayHit then
+			local canDamage, opts =
+				Damage.canDamage({ Dealer = LocalPlayer, Taker = rayHit.Instance })
+			if canDamage and not AUTOSHOOT_SETTINGS.filterAutoShoot(opts.Taker) then
+				return rayHit.Position, rayHit.Instance
+			end
+		end
+	end
+
+	-- 2) fallback: expanding cone sweep
+	local epsilon = 1e-3
+	local minRadius = AUTOSHOOT_SETTINGS.MinRadius or 0.25
+	local radiusAtMax = AUTOSHOOT_SETTINGS.RadiusAtMaxDistance
+	if not radiusAtMax or radiusAtMax <= 0 then
+		return nil, nil
+	end
+	local step = AUTOSHOOT_SETTINGS.ConeStep or 16
+	local maxClamp = AUTOSHOOT_SETTINGS.MaxClampRadius or 256
+
+	local safeMax = math.max(1e-3, maxDistance)
+	local coneTan = radiusAtMax / safeMax
+
+	local traveled = 0
+	local nearSeg = math.min(800, maxDistance)
+	if nearSeg > 0 then
+		local segCenterDist = nearSeg * 0.5
+		local radius = math.clamp(
+			math.max(minRadius, coneTan * segCenterDist),
+			minRadius,
+			maxClamp
+		)
+		local r0 = workspace:Spherecast(
+			baseOrigin,
+			radius,
+			direction * math.max(0, nearSeg - epsilon),
+			shapeCastParams
+		)
+		if r0 then
+			return r0.Position, r0.Instance
+		end
+		traveled += nearSeg
+	end
+
+	while traveled < maxDistance do
+		local segLen = math.min(step, maxDistance - traveled)
+		if segLen <= 0 then
+			break
+		end
+
+		local segCenterDist = traveled + segLen * 0.5
+		local radius = math.clamp(
+			math.max(minRadius, coneTan * segCenterDist),
+			minRadius,
+			maxClamp
+		)
+
+		local segOrigin = baseOrigin + direction * traveled
+		local result =
+			workspace:Spherecast(segOrigin, radius, direction * segLen, shapeCastParams)
+		if result then
+			return result.Position, result.Instance
+		end
+
+		traveled += segLen
+	end
+
+	return nil, nil
+end
+
+local autoAimPos: Vector3? = nil
 local function onHeartbeat()
 	if not mouseDown or isFiring then
 		return
 	end
-
-	-- No auto re-fire if semi or burst
 	isFiring = true
+
 	if gun.settings.Gun.FireMode == "Semi" or gun.settings.Gun.FireMode == "Burst" then
 		setMouseDown(false)
 	end
 
-	-- Get hit position
 	local pos
-	if isMobile then
+	if autoAimPos then
+		pos = autoAimPos
+	elseif isMobile then
 		pos = getHitFromViewport()
 	else
 		pos = mouse.Hit.Position
 	end
 
-	-- Fire gun
-	local success, err = pcall(gun.Fire, gun, pos)
-	if not success then
+	local ok, err = pcall(gun.Fire, gun, pos)
+	if not ok then
 		LOG:Error("Gun failed to fire for client %s: %s", LocalPlayer.UserId, err)
 	end
 
-	-- Determine burst
 	local n = (gun.settings.Gun.BurstSize or 1) - 1
 	for i = 1, n do
 		task.wait(1 / gun.settings.Gun.FireRate)
@@ -80,11 +190,6 @@ local function onHeartbeat()
 end
 
 local function setupMobile()
-	--[[
-		NOTE: We should not use context action service here because the camera
-		needs to be able to move while firing. Context action service fires the 
-		`gameProcessedEvent` when stops the camera from moving. 
-	]]
 	connections:Add(
 		"mouseDown",
 		mobileCanvas.Fire.MouseButton1Down:Connect(function()
@@ -156,32 +261,45 @@ local function setupAutoshoot()
 	if not PlayerSettings:Lookup("AutoShoot", true) then
 		return
 	end
+
 	local thisInterval = tick()
 	lastAutoInterval = thisInterval
 	local isAutofiring = false
+
 	task.spawn(function()
 		while gun.isEquipped and thisInterval == lastAutoInterval do
 			if not PlayerSettings:Lookup("AutoShoot", true) then
-				task.wait(1)
+				task.wait(3)
+				isAutofiring = false
+				mouseDown = false
+				autoAimPos = nil
 				continue
 			end
+
 			if isAutofiring then
-				task.wait(SETTINGS.PollRates.Firing)
+				task.wait(AUTOSHOOT_SETTINGS.PollRates.Firing)
 			else
-				task.wait(SETTINGS.PollRates.NotFiring)
+				task.wait(AUTOSHOOT_SETTINGS.PollRates.NotFiring)
 			end
 
-			-- Get hit position
-			local _pos, hit
-			if isMobile then
-				_pos, hit = getHitFromViewport()
+			local aimPos: Vector3? = nil
+			local hit: Instance? = nil
+
+			if shapeCastParams then
+				aimPos, hit = getHitFromCone()
 			else
-				hit = mouse.Target
+				if isMobile then
+					aimPos, hit = getHitFromViewport()
+				else
+					hit = mouse.Target
+					aimPos = hit and mouse.Hit.Position or nil
+				end
 			end
 
 			if not hit then
 				mouseDown = false
 				isAutofiring = false
+				autoAimPos = nil
 				continue
 			end
 
@@ -189,14 +307,17 @@ local function setupAutoshoot()
 				Dealer = LocalPlayer,
 				Taker = hit,
 			})
-			if not canDamage or SETTINGS.filterAutoShoot(options.Taker) then
+
+			if not canDamage or AUTOSHOOT_SETTINGS.filterAutoShoot(options.Taker) then
 				if isAutofiring then
 					mouseDown = false
 					isAutofiring = false
+					autoAimPos = nil
 				end
 				continue
 			end
 
+			autoAimPos = aimPos or hit.Position
 			mouseDown = true
 			isAutofiring = true
 		end
@@ -204,7 +325,6 @@ local function setupAutoshoot()
 end
 
 local function onEquip()
-	-- Connections
 	connections:Add("heartbeat", RunService.Heartbeat:Connect(onHeartbeat))
 	if isMobile then
 		setupMobile()
@@ -212,13 +332,12 @@ local function onEquip()
 		setupDesktop()
 	end
 
-	-- Gun
 	gun:Equip()
-	local autoShootMode = SETTINGS.AutoShootMode
+	local autoShootMode = AUTOSHOOT_SETTINGS.Mode
 	if isMobile then
 		mobileCanvas.Visible = true
 		setupMobile()
-		if table.find({ "Any", "Mobile" }, autoShootMode) then
+		if autoShootMode == "Mobile" then
 			setupAutoshoot()
 		end
 	else
@@ -230,10 +349,7 @@ local function onEquip()
 end
 
 local function onUnEquip()
-	-- Connections
 	connections:RemoveAll()
-
-	-- Gun
 	gun:Unequip()
 	isFiring = false
 	setMouseDown(false)

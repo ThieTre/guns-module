@@ -33,7 +33,7 @@ function ClientGun:new(tool: Tool): ClientGun
 	self.__clientcaster = ClientCaster
 
 	self.object = tool
-	self.handle = self.object.Handle
+	self.handle = self.object:WaitForChild("Handle")
 	self.lastFire = 0
 	self.lastAimChange = 0
 	self.nextBarrelCount = 1
@@ -41,13 +41,13 @@ function ClientGun:new(tool: Tool): ClientGun
 	self.isAiming = false
 
 	-- Base table
+	self.remoteFunction = self.object:WaitForChild("RemoteFunction")
 	self.__clientcaster.new(self, tool)
 	self.currentAmmo = self.settings.Gun.Capacity
-	self.remoteFunction = self.object:WaitForChild("RemoteFunction")
 
 	-- Ui
 	self.ui = self.player.PlayerGui.Gun
-	self.hotbar = self.player.PlayerGui.HUD.Hotbar
+	self.hotbar = self.player.PlayerGui.HUD.Hotbar.Tiles
 
 	return self
 end
@@ -63,6 +63,7 @@ function ClientGun:_Setup()
 
 	self:_SetupAnimations()
 	self:_SetupEffects()
+	self:_SetupConnections()
 
 	self.losPart = self.character:WaitForChild("Head")
 end
@@ -127,6 +128,14 @@ function ClientGun:_SetupEffects()
 	self.effectsManager = EffectsManager:new(gun:GetDescendants())
 end
 
+function ClientGun:_SetupConnections()
+	self.remoteFunction.OnClientInvoke = function(event: string)
+		if event == "Reload" then
+			task.spawn(self.Reload, self, true)
+		end
+	end
+end
+
 -- =============== Firing ==============
 
 function ClientGun:Fire(pos: Vector3)
@@ -139,12 +148,19 @@ function ClientGun:Fire(pos: Vector3)
 	self:_FireInterface()
 end
 
-function ClientGun:_FireFunctionality(pos): boolean
+function ClientGun:_FireFunctionality(
+	pos,
+	kwargs: {
+		ignoreFireCheck: boolean,
+		includeEffects: boolean,
+	}
+): boolean
+	kwargs = kwargs or {}
 	if self.currentAmmo < 1 then
 		self:Reload()
 		return false
 	end
-	if not self:_CanFire() then
+	if not kwargs.ignoreFireCheck and not self:_CanFire() then
 		return false
 	end
 
@@ -157,29 +173,40 @@ function ClientGun:_FireFunctionality(pos): boolean
 		spreadAdj *= self.settings.Gun.CrouchSpreadAdj or SETTINGS.DefaultCrouchSpreadAdj
 	end
 
+	local function fire()
+		for _ = 1, self.settings.Gun.BulletsPerShot or 1 do
+			if self.settings.Gun.LockProjectileDirection then
+				local barrelForward = self.firePoint.WorldCFrame.LookVector
+				local posDirection = (pos - self.firePoint.WorldPosition).Unit
+				local dot = barrelForward:Dot(posDirection)
+				local angle = math.deg(math.acos(math.clamp(dot, -1, 1)))
+
+				if angle > 5 then
+					local distance = (self.firePoint.WorldPosition - pos).Magnitude
+					if distance > 10 then
+						pos = (self.firePoint.WorldPosition + barrelForward * 10000)
+					end
+				end
+			end
+			self:Cast(pos, spreadAdj)
+		end
+		if kwargs.includeEffects then
+			self:_FireEffects()
+		end
+	end
+
 	-- Firing
 	local thisFire = tick()
 	self.lastFire = thisFire
 	self.currentAmmo -= 1
-	for _ = 1, self.settings.Gun.BulletsPerShot or 1 do
-		if self.settings.Gun.LockProjectileDirection then
-			local barrelForward = self.firePoint.WorldCFrame.LookVector
-			local posDirection = (pos - self.firePoint.WorldPosition).Unit
-			local dot = barrelForward:Dot(posDirection)
-			local angle = math.deg(math.acos(math.clamp(dot, -1, 1)))
-
-			if angle > 5 then
-				local distance = (self.firePoint.WorldPosition - pos).Magnitude
-				if distance > 10 then
-					pos = (self.firePoint.WorldPosition + barrelForward * 10000)
-				end
-			end
-		end
-		self:Cast(pos, spreadAdj)
+	if self.fireDelay then
+		task.delay(self.fireDelay, fire)
+	else
+		fire()
 	end
 
 	-- Recoil
-	if not self.isMobile then
+	if not self.isMobile and not SETTINGS.RecoilDisabled then
 		Strafer.TargetVertAngleOffset += self.settings.Gun.VerticalRecoil
 		task.delay(
 			math.clamp((1 / self.settings.Gun.FireRate) * 1.5, 0, 0.5),
@@ -190,6 +217,12 @@ function ClientGun:_FireFunctionality(pos): boolean
 			end
 		)
 	end
+
+	-- if self.currentAmmo < 1 then
+	-- 	task.spawn(function()
+	-- 		self:Reload()
+	-- 	end)
+	-- end
 
 	return true
 end
@@ -255,12 +288,13 @@ end
 
 -- =============== Reloading ==============
 
-function ClientGun:Reload()
-	local canReload = not self.isReloading
-		and self.currentAmmo ~= self.settings.Gun.Capacity
+function ClientGun:Reload(force: boolean?)
+	local canReload = force
+		or (not self.isReloading and self.currentAmmo ~= self.settings.Gun.Capacity)
 	if not canReload then
 		return false
 	end
+
 	self:_ReloadEffects()
 	self:_ReloadFunctionality()
 
@@ -276,15 +310,17 @@ function ClientGun:_ReloadFunctionality()
 	end
 
 	self.isReloading = true
+	self.object:SetAttribute("IsReloading", true)
 	local newAmmo = self.remoteFunction:InvokeServer("Reload")
+	self.isReloading = false
+	self.object:SetAttribute("IsReloading", false)
+
 	self.canAim = true
 	if newAmmo == self.currentAmmo then
-		self.isReloading = false
 		return false
 	end
 	self.currentAmmo = newAmmo or self.currentAmmo
 
-	self.isReloading = false
 	return true
 end
 
@@ -302,6 +338,11 @@ function ClientGun:ToggleAim(enabled: boolean)
 	AMS:EndSprint()
 	local targetFOV = nil
 	local tweenInfo = TweenInfo.new(self.settings.Gun.AimSpeed, Enum.EasingStyle.Linear)
+	local scopeSettings = self.settings.Gun.Scope
+
+	if scopeSettings then
+		scopeSettings.AimSpeed = scopeSettings.AimSpeed or self.settings.Gun.AimSpeed
+	end
 
 	self.isAiming = enabled
 
@@ -319,20 +360,13 @@ function ClientGun:ToggleAim(enabled: boolean)
 			* (1 / self.settings.Gun.AimFOVMult)
 			* mobileAimAdj
 		zoomSettings.FieldOfView = targetFOV
-		zoomSettings.LerpSpeed = 1
 
 		Strafer:SetActiveCameraSettings("ZoomedShoulder")
 		self.effectsManager:Run("ZoomIn")
-		local scopeSettings = self.settings.Gun.Scope
 		if scopeSettings then
 			self.ui.Dot.Visible = false
 			Strafer:SetShoulderDirection(1)
-			local scopeTween = TweenService:Create(
-				self.ui.Scope,
-				TweenInfo.new(self.settings.Gun.AimSpeed * 2),
-				{ GroupTransparency = 0 }
-			)
-			scopeTween:Play()
+			self:_UpdateScopeUI(scopeSettings, true)
 			local gunLength = (
 				self.settings.Caster.FirePoint.WorldCFrame.Position
 				- self.object.Handle.position
@@ -351,13 +385,8 @@ function ClientGun:ToggleAim(enabled: boolean)
 		targetFOV = SETTINGS.DefaultFOV
 		self.effectsManager:Run("ZoomOut")
 		-- Return camera back to normal
-		if self.settings.Gun.Scope then
-			local scopeTween = TweenService:Create(
-				self.ui.Scope,
-				TweenInfo.new(self.settings.Gun.AimSpeed),
-				{ GroupTransparency = 1 }
-			)
-			scopeTween:Play()
+		if scopeSettings then
+			self:_UpdateScopeUI(scopeSettings, false)
 			self.ui.Dot.Visible = true
 		end
 		self.humanoid.WalkSpeed /= self.settings.Gun.AimWalkSpeedAdj
@@ -381,6 +410,64 @@ function ClientGun:ToggleAim(enabled: boolean)
 	end
 end
 
+function ClientGun:_UpdateScopeUI(scopeSettings: {}, enabled: boolean)
+	local scope = self.ui.Scope
+	scope.Reticle.Image = scopeSettings.ReticleImage or ""
+	scope.Left.BackgroundColor3 = scopeSettings.BackgroundColor or Color3.new()
+	scope.Right.BackgroundColor3 = scopeSettings.BackgroundColor or Color3.new()
+	scope.Top.BackgroundColor3 = scopeSettings.BackgroundColor or Color3.new()
+	scope.Bottom.BackgroundColor3 = scopeSettings.BackgroundColor or Color3.new()
+
+	local aimSpeed = scopeSettings.AimSpeed
+	local backgroundTransp, reticleTransp
+	if enabled then
+		backgroundTransp = scopeSettings.BackgroundTransparency or 1
+		reticleTransp = scopeSettings.ReticleTransparency or 0
+		aimSpeed *= 2
+	else
+		backgroundTransp = 1
+		reticleTransp = 1
+	end
+
+	local tweenInfo = (
+		TweenInfo.new(aimSpeed, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+	)
+
+	local tweens = {}
+	for _, frame in { scope.Left, scope.Right, scope.Top, scope.Bottom } do
+		local tween = TweenService:Create(
+			frame,
+			tweenInfo,
+			{ BackgroundTransparency = backgroundTransp }
+		)
+		table.insert(tweens, tween)
+	end
+	local tween = TweenService:Create(
+		scope.Reticle,
+		tweenInfo,
+		{ ImageTransparency = reticleTransp }
+	)
+	table.insert(tweens, tween)
+
+	if scopeSettings.ReticleScale then
+		if enabled then
+			scope.Size = scopeSettings.ReticleScale
+		else
+			scope.Size = UDim2.fromScale(1, 1)
+		end
+	end
+
+	for _, tween in tweens do
+		tween:Play()
+	end
+
+	if scopeSettings.IncludeMetadata then
+		scope.FirePoint.Value = enabled and self.firePoint or nil
+	end
+
+	return tweens
+end
+
 -- =============== Equip/Unequip ==============
 
 function ClientGun:Equip()
@@ -400,16 +487,6 @@ function ClientGun:Equip()
 	-- Ui
 	self.ui.Dot.Visible = true
 	self.hotbar[self:_GetSlot()].Count.Text = math.floor(self.currentAmmo)
-	local scopeInfo = self.settings.Gun.Scope
-	if scopeInfo then
-		local scope = self.ui.Scope
-		scope.Reticle.Image = scopeInfo.ReticleImage
-		scope.Reticle.ImageTransparency = scopeInfo.BackgroundTransparency
-		scope.Left.Transparency = scopeInfo.BackgroundTransparency
-		scope.Right.Transparency = scopeInfo.BackgroundTransparency
-		scope.Left.BackgroundColor3 = scopeInfo.BackgroundColor
-		scope.Right.BackgroundColor3 = scopeInfo.BackgroundColor
-	end
 
 	-- Equip
 	self.isEquipped = self.object.Parent ~= self.player.Backpack
@@ -478,22 +555,17 @@ function ClientGun._setupClient(gun: Tool)
 end
 
 function ClientGun._setupRemotes(gun: Tool | Model)
-	-- NOTE: for now we don't want to setup remotes
-	-- if the player is the owner
-	local owner
-	if gun.Parent:IsA("Backpack") then
-		owner = gun.Parent.Parent
-	else
-		owner = Players:GetPlayerFromCharacter(gun.Parent)
-	end
-	if owner == LocalPlayer then
+	local remoteEvent: RemoteEvent = gun:WaitForChild("RemoteEvent")
+	local handle = gun:WaitForChild("Handle", 10)
+	if not handle then
 		return
 	end
-
-	local remoteEvent: RemoteEvent = gun:WaitForChild("RemoteEvent")
-	local handle = gun:WaitForChild("Handle")
 	local gunSettings = require(gun.Settings)
 	local nextBarrelCount = 1
+	local barrelCount = gunSettings.Gun.BarrelCount
+	local inheritParentSpeed = gunSettings.Caster.InheritParentSpeed
+	local bulletsPerShot = gunSettings.Gun.BulletsPerShot
+	local projecileSpeed = gunSettings.Caster.ProjectileSpeed
 
 	local effectsManager = EffectsManager:new(gun:GetDescendants())
 	effectsManager:UpdateGroup("Fire", { "Emitter" })
@@ -503,30 +575,25 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	local fireTemplate = gun:WaitForChild("Handle"):FindFirstChild("Fire")
 	if fireTemplate then
 		fireTemplate:WaitForChild("EqualizerSoundEffect")
-		if (gunSettings.Gun.BulletsPerShot or 1) > 1 then
-			fireTemplate.Volume /= gunSettings.Gun.BulletsPerShot
+		if (bulletsPerShot or 1) > 1 then
+			fireTemplate.Volume /= bulletsPerShot
 		end
 		soundCache = ICache:new(fireTemplate, { parent = handle })
 	end
 
-	-- Configure emitter
-	local emitter: ParticleEmitter = handle.FirePoint.Emitter
-	local maxSpread = gunSettings.Caster.MaxSpread
-	emitter.SpreadAngle = Vector2.new(maxSpread)
-	emitter:SetAttribute("EmitCount", gunSettings.BulletsPerShot or 1)
-
-	-- NOTE: for now, this event is only used for firing
+	local emitterAttach = handle.FirePoint:WaitForChild("EmitterAttachment", 3)
+	local emitter: ParticleEmitter = emitterAttach and emitterAttach.Emitter
 	remoteEvent.OnClientEvent:Connect(function(castDistance: number?)
-		-- Emitter distance
-		if castDistance then
-			emitter.Lifetime = NumberRange.new(castDistance / emitter.Speed.Max)
-		else
-			emitter.Lifetime = NumberRange.new(2)
-		end
-		if gunSettings.Caster.InheritParentSpeed then
-			local inherited = handle.AssemblyLinearVelocity.Magnitude
-			emitter.Speed =
-				NumberRange.new(gunSettings.Caster.ProjectileSpeed * inherited)
+		if emitter then
+			if castDistance then
+				emitter.Lifetime = NumberRange.new(castDistance / emitter.Speed.Max)
+			else
+				emitter.Lifetime = NumberRange.new(2)
+			end
+			if inheritParentSpeed then
+				local inherited = handle.AssemblyLinearVelocity.Magnitude
+				emitter.Speed = NumberRange.new(projecileSpeed * inherited)
+			end
 		end
 		if soundCache then
 			-- Configure and play sound
@@ -557,17 +624,17 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 				LOG:Warning("Failed to configure distance equalizer: %s", err)
 			end
 			sound:Play()
-			sound.Ended:Connect(function()
+			sound.Ended:Once(function()
 				soundCache:Return(sound)
 			end)
 		end
 		-- Run other effects
 		effectsManager:RunAll("Fire")
 
-		if gunSettings.BarrelCount then
+		if barrelCount then
 			effectsManager:RunAll("FireBarrel" .. nextBarrelCount)
 			nextBarrelCount += 1
-			if nextBarrelCount > gunSettings.BarrelCount then
+			if nextBarrelCount > barrelCount then
 				nextBarrelCount = 1
 			end
 		end
@@ -587,7 +654,10 @@ function ClientGun._setupWelding(gun: Tool)
 	end
 	local character, humanoid =
 		PlayerUtils.waitForObjects(owner, "Character", "Humanoid")
-	local torso = character.UpperTorso
+	local torso = character:WaitForChild("UpperTorso", 7)
+	if not torso then
+		error("Upper torso not found")
+	end
 	-- Attempt to find open slot. It might take a little time for
 	-- an overwritten tool to be destroyed so we have to wrap this in
 	-- a timed loop

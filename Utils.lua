@@ -6,6 +6,7 @@ local Logging = require(Modules.Mega.Logging)
 
 local scripts = script.Parent.Cloned
 
+local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local LOG = Logging:new("Guns.Utils")
 
 -----------------------------------------------------------
@@ -19,6 +20,7 @@ function Utils.giveGun(player: Player, name: string): Tool
 	local assets = ServerStorage.Assets.Guns.Tools
 	local tool = assets[name]:Clone()
 	tool.Parent = player.Backpack
+
 	for _, scriptName in { "Server", "Client" } do
 		local scriptClone = scripts[scriptName]:Clone()
 		scriptClone.Parent = tool
@@ -38,6 +40,13 @@ end
 function Utils.getDamage(settings: {})
 	local base = settings.Damage.Damage
 	local mult = settings.Damage.TypeMultipliers.Vehicle or 1
+
+	local targetType = SETTINGS.VehicleDPSTypes
+	local typeMults = settings.Damage.VehicleTypeMultipliers
+	if targetType and typeMults then
+		mult *= typeMults[targetType] or 1
+	end
+
 	local pellets = settings.BulletsPerShot or 1
 	return math.round(base * mult * pellets)
 end

@@ -3,6 +3,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
+local Damage = require(Modules.Damage.Damage)
 
 local scripts = script.Parent.Cloned
 
@@ -47,7 +48,14 @@ function Utils.getDamage(settings: {})
 		mult *= typeMults[targetType] or 1
 	end
 
-	local pellets = settings.BulletsPerShot or 1
+	local distanceInfo = settings.Damage.Distance
+	if distanceInfo then
+		local damageOptions = { Distance = table.clone(distanceInfo) }
+		damageOptions.Distance.Distance = settings.Caster.MaxDistance / 2 -- simulate mid range
+		mult *= Damage._getDecayMultiplier(damageOptions)
+	end
+
+	local pellets = settings.Gun.BulletsPerShot or 1
 	return math.round(base * mult * pellets)
 end
 
@@ -55,13 +63,15 @@ function Utils.getCycleTime(settings: {})
 	local rps = settings.Gun.FireRate
 	local cap = settings.Gun.Capacity
 	local reload = settings.Gun.ReloadTime
+
 	local timeToEmpty = (cap - 1) / rps
-	return math.round(timeToEmpty + reload)
+	return timeToEmpty + reload
 end
 
 function Utils.getDPS(settings: {})
 	local totalDamage = Utils.getDamage(settings) * settings.Gun.Capacity
 	local cycle = Utils.getCycleTime(settings)
+
 	return math.round(totalDamage / cycle)
 end
 

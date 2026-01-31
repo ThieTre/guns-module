@@ -8,6 +8,7 @@ local EffectsManager = require(Modules.Mega.Utils.EffectsManager)
 
 local LOG = Logging:new("Guns.ServerGun")
 local SETTINGS = require(ReplicatedStorage.Settings.Guns)
+local FLOAT_TOLERANCE = 1e-6
 
 -----------------------------------------------------------
 ---------------------- Server Gun -------------------------
@@ -31,8 +32,9 @@ function ServerGun:new(object: Tool | Model)
 		self.object.Handle:FindFirstChild("Ejector")
 	)
 	self.hasBeenFired = false
-	self.currentAmmo = self.settings.Gun.Capacity
 	self.castType = self.settings.Caster.Type
+
+	self:SetCurrentAmmo(self.settings.Gun.Capacity)
 
 	return self
 end
@@ -125,10 +127,16 @@ function ServerGun:_SetupROFBucket()
 	end)
 end
 
+function ServerGun:SetCurrentAmmo(value: number)
+	if math.abs(value) <= FLOAT_TOLERANCE then
+		self.currentAmmo = 0
+	else
+		self.currentAmmo = value
+	end
+end
+
 function ServerGun:_OnCastEvent(...): boolean
 	if self.currentAmmo <= 0 then
-		-- Ammo mismatch between server and client should never happen
-		-- unless a player is exploiting
 		LOG:Debug("Cast event rejected due to no remaining ammo")
 		return false
 	end
@@ -145,7 +153,8 @@ function ServerGun:_OnCastEvent(...): boolean
 		end
 	end
 
-	self.currentAmmo -= 1 / self.bulletsPerShot -- decrease ammo count regardless of ROF violations
+	self:SetCurrentAmmo(self.currentAmmo - 1 / self.bulletsPerShot)
+
 	local isValid = self:_CheckROF()
 	if not isValid then
 		return false
@@ -158,7 +167,7 @@ function ServerGun:_OnCastEvent(...): boolean
 			if player == self.player then
 				continue
 			end
-			local distance = self.remoteEvent:FireClient(
+			self.remoteEvent:FireClient(
 				player,
 				(rayResults and rayResults.Distance) or nil
 			)
@@ -168,7 +177,7 @@ function ServerGun:_OnCastEvent(...): boolean
 	self.bucketSize += 1
 
 	if self.currentAmmo <= 0 then
-		task.spawn(function()
+		task.delay(0.1, function() -- TODO: fix this race
 			self.remoteFunction:InvokeClient(self.player, "Reload")
 		end)
 	end
@@ -227,7 +236,7 @@ function ServerGun:Reload()
 	cancelCon:Disconnect()
 
 	-- Fill ammo
-	self.currentAmmo = self.settings.Gun.Capacity
+	self:SetCurrentAmmo(self.settings.Gun.Capacity)
 	self.isReloading = false
 
 	self:_SetHiddenParts(true)

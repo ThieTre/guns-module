@@ -176,12 +176,6 @@ function ServerGun:_OnCastEvent(...): boolean
 
 	self.bucketSize += 1
 
-	if self.currentAmmo <= 0 then
-		task.delay(0.1, function() -- TODO: fix this race
-			self.remoteFunction:InvokeClient(self.player, "Reload")
-		end)
-	end
-
 	return true
 end
 
@@ -205,9 +199,12 @@ function ServerGun:_CheckROF(): boolean
 	return true
 end
 
-function ServerGun:Reload()
+function ServerGun:Reload(ignoreCapacity: boolean)
 	LOG:Debug("Reload requested for %s", self.object.Name)
-	if self.isReloading or self.settings.Gun.Capacity == self.currentAmmo then
+	local isAlreadyFull = (
+		not ignoreCapacity and self.settings.Gun.Capacity == self.currentAmmo
+	)
+	if self.isReloading or isAlreadyFull then
 		LOG:Warning("Reload request rejected")
 		return self.currentAmmo
 	end

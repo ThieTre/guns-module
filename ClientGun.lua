@@ -156,6 +156,7 @@ function ClientGun:_FireFunctionality(
 	}
 ): boolean
 	kwargs = kwargs or {}
+
 	if self.currentAmmo < 1 then
 		self:Reload()
 		return false
@@ -218,11 +219,11 @@ function ClientGun:_FireFunctionality(
 		)
 	end
 
-	-- if self.currentAmmo < 1 then
-	-- 	task.spawn(function()
-	-- 		self:Reload()
-	-- 	end)
-	-- end
+	if self.currentAmmo < 1 then
+		task.spawn(function()
+			self:Reload()
+		end)
+	end
 
 	return true
 end
@@ -311,7 +312,7 @@ function ClientGun:_ReloadFunctionality()
 
 	self.isReloading = true
 	self.object:SetAttribute("IsReloading", true)
-	local newAmmo = self.remoteFunction:InvokeServer("Reload")
+	local newAmmo = self.remoteFunction:InvokeServer("Reload", true)
 	self.isReloading = false
 	self.object:SetAttribute("IsReloading", false)
 
@@ -539,6 +540,22 @@ function ClientGun:_RequestTorsoLock(enabled: boolean, ignoreHold: boolean?)
 	end
 	if not ignoreHold then
 		self:_Hold()
+	end
+end
+
+function ClientGun:_SetHiddenParts(visible: boolean)
+	for _, p in self.object.Model:GetChildren() do
+		if not p:IsA("BasePart") or not p:GetAttribute("HideOnReload") then
+			continue
+		end
+		if visible then
+			p.Transparency = p:GetAttribute("_BaseTransparency") or 0
+		else
+			if p.Transparency ~= 0 and not p:GetAttribute("_BaseTransparency") then
+				p:SetAttribute("_BaseTransparency", p.Transparency)
+			end
+			p.Transparency = 1
+		end
 	end
 end
 

@@ -165,6 +165,14 @@ function ClientGun:_FireFunctionality(
 		return false
 	end
 
+	local guidedTargetVehicle = nil
+	if self:UseGuidedLock() then
+		guidedTargetVehicle = self:GetGuidedTargetVehicle()
+		if not guidedTargetVehicle then
+			return false
+		end
+	end
+
 	-- Adjust spread
 	local spreadAdj = 1
 	if self.isFullyAimed then
@@ -189,7 +197,9 @@ function ClientGun:_FireFunctionality(
 					end
 				end
 			end
-			self:Cast(pos, spreadAdj)
+			self:Cast(pos, spreadAdj, {
+				GuidedTargetVehicle = guidedTargetVehicle,
+			})
 		end
 		if kwargs.includeEffects then
 			self:_FireEffects()

@@ -28,6 +28,7 @@ local AMS = require(Modules.AMS.Controller)
 local Strafer = require(Modules.Strafer)
 local ConnManager = require(Modules.Mega.Utils.ConnManager)
 local Damage = require(Modules.Damage.Damage)
+local GuidedTargeting = require(Modules.Casting.GuidedTargeting)
 
 local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local LOG = Logging:new("Guns.Client")
@@ -38,6 +39,7 @@ local isMobile = MiscUtils.getClientPlatform() == "Mobile"
 
 local connections = ConnManager:new()
 local gun = ClientGun:new(tool)
+local guidedTargeting = nil
 
 local isFiring = false
 local mouseDown = false
@@ -155,8 +157,24 @@ local function getHitFromCone(): (Vector3?, Instance?)
 	return nil, nil
 end
 
+local function getAimRay(): (Vector3, Vector3)
+	if isMobile then
+		local x, y = camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2
+		local ray = camera:ViewportPointToRay(x, y)
+		return ray.Origin, ray.Direction
+	end
+
+	local ray = mouse.UnitRay
+	return ray.Origin, ray.Direction
+end
+
 local autoAimPos: Vector3? = nil
 local function onHeartbeat()
+	if guidedTargeting then
+		local aimOrigin, aimDirection = getAimRay()
+		guidedTargeting:Update(aimOrigin, aimDirection)
+	end
+
 	if not mouseDown or isFiring then
 		return
 	end
@@ -324,6 +342,25 @@ local function setupAutoshoot()
 	end)
 end
 
+local function syncGuidedTargeting()
+	if guidedTargeting then
+		guidedTargeting:Destroy(true)
+		guidedTargeting = nil
+	end
+
+	if not gun.isEquipped or not gun:UseGuidedLock() then
+		return
+	end
+
+	guidedTargeting = GuidedTargeting:new({
+		player = LocalPlayer,
+		root = gun:GetGuidedTargetRoot(),
+		weaponObject = gun.object,
+		firePoint = gun.firePoint,
+		maxDistance = gun.settings.Caster.MaxDistance or 1500,
+	})
+end
+
 local function onEquip()
 	connections:Add("heartbeat", RunService.Heartbeat:Connect(onHeartbeat))
 	if isMobile then
@@ -333,6 +370,7 @@ local function onEquip()
 	end
 
 	gun:Equip()
+	syncGuidedTargeting()
 	local autoShootMode = AUTOSHOOT_SETTINGS.Mode
 	if isMobile then
 		mobileCanvas.Visible = true
@@ -351,6 +389,10 @@ end
 local function onUnEquip()
 	connections:RemoveAll()
 	gun:Unequip()
+	if guidedTargeting then
+		guidedTargeting:Destroy(true)
+		guidedTargeting = nil
+	end
 	isFiring = false
 	setMouseDown(false)
 	if isMobile then

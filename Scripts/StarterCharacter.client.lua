@@ -103,7 +103,11 @@ local function onFirePointChange()
 			statusText.Text = "Reloading"
 			statusText.TextColor3 = RED
 		elseif fireBlockedUi and fireBlockedUi.Enabled then
-			statusText.Text = "Blocked"
+			if fireBlockedUi:GetAttribute("Locked") then
+				statusText.Text = "Lock Required"
+			else
+				statusText.Text = "Blocked"
+			end
 			statusText.TextColor3 = RED
 		else
 			statusText.Text = "Ready"

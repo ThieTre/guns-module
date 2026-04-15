@@ -60,6 +60,9 @@ end
 local function setMouseDown(status: boolean)
 	mouseDown = status
 	AMS.actionLocks.sprinting = status
+	if not status and not isFiring then
+		gun:ResetFireRateRamp()
+	end
 end
 
 local function getHitFromViewport()
@@ -176,6 +179,9 @@ local function onHeartbeat()
 	end
 
 	if not mouseDown or isFiring then
+		if not mouseDown and not isFiring then
+			gun:ResetFireRateRamp()
+		end
 		return
 	end
 	isFiring = true
@@ -193,17 +199,31 @@ local function onHeartbeat()
 		pos = mouse.Hit.Position
 	end
 
-	local ok, err = pcall(gun.Fire, gun, pos)
+	local ok, firedOrErr = pcall(gun.Fire, gun, pos)
 	if not ok then
-		LOG:Error("Gun failed to fire for client %s: %s", LocalPlayer.UserId, err)
+		LOG:Error(
+			"Gun failed to fire for client %s: %s",
+			LocalPlayer.UserId,
+			firedOrErr
+		)
 	end
 
-	local n = (gun.settings.Gun.BurstSize or 1) - 1
-	for i = 1, n do
-		task.wait(1 / gun.settings.Gun.FireRate)
-		gun:Fire(pos)
+	if ok and firedOrErr and gun:_UsesBurstFireRate() then
+		local burstDelay = gun:_GetBurstDelay()
+		for _ = 2, gun:_GetBurstSize() do
+			task.wait(burstDelay)
+			if not gun:Fire(pos, { ignoreFireCheck = true }) then
+				break
+			end
+		end
+
+		local burstCooldown = gun:_GetFireCooldownDuration()
+		gun:_LockFireCooldown(burstCooldown)
+		task.wait(burstCooldown)
+	elseif ok and firedOrErr then
+		task.wait(gun:_GetFireCooldownDuration())
 	end
-	task.wait(gun.settings.BurstDelay or 0)
+
 	isFiring = false
 end
 
@@ -290,6 +310,7 @@ local function setupAutoshoot()
 				task.wait(3)
 				isAutofiring = false
 				mouseDown = false
+				gun:ResetFireRateRamp()
 				autoAimPos = nil
 				continue
 			end
@@ -316,6 +337,7 @@ local function setupAutoshoot()
 
 			if not hit then
 				mouseDown = false
+				gun:ResetFireRateRamp()
 				isAutofiring = false
 				autoAimPos = nil
 				continue
@@ -329,6 +351,7 @@ local function setupAutoshoot()
 			if not canDamage or AUTOSHOOT_SETTINGS.filterAutoShoot(options.Taker) then
 				if isAutofiring then
 					mouseDown = false
+					gun:ResetFireRateRamp()
 					isAutofiring = false
 					autoAimPos = nil
 				end

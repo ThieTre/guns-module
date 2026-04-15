@@ -104,15 +104,35 @@ function ServerGun:_ResolveOwnership()
 	self.__servercaster._ResolveOwnership(self)
 end
 
+function ServerGun:_UsesBurstFireRate(): boolean
+	local fireMode = self.settings.Gun.FireMode
+	return fireMode == "Burst" or fireMode == "AutoBurst"
+end
+
+function ServerGun:_GetBurstSize(): number
+	return self.settings.Gun.BurstSize or 1
+end
+
+function ServerGun:_GetBurstDelay(): number
+	return self.settings.Gun.BurstDelay or self.settings.BurstDelay or 0
+end
+
+function ServerGun:_GetFireCooldownDuration(): number
+	return 1 / self.settings.Gun.FireRate
+end
+
 function ServerGun:_SetupROFBucket()
 	local gunSettings = self.settings.Gun
 	local refillWindow = SETTINGS.ROFBucket.RefillRate
 	local leaniance = SETTINGS.ROFBucket.Leniance
 	local trueFireRate = gunSettings.FireRate
-	if gunSettings.FireMode == "Burst" then
-		-- Include burst delay in fire rate, be a little more leniate in bucket size
-		trueFireRate = gunSettings.BurstSize
-			/ ((gunSettings.BurstSize / gunSettings.FireRate) + gunSettings.BurstDelay)
+	if self:_UsesBurstFireRate() then
+		local burstSize = self:_GetBurstSize()
+		local burstCycleDuration = self:_GetFireCooldownDuration()
+			+ math.max(0, burstSize - 1) * self:_GetBurstDelay()
+
+		-- Include the full burst cycle in fire rate, be a little more leniate in bucket size
+		trueFireRate = burstSize / burstCycleDuration
 		leaniance *= 1.05
 	end
 	self.bucketSize = 0
@@ -242,7 +262,11 @@ function ServerGun:Reload(ignoreCapacity: boolean)
 end
 
 function ServerGun:_SetHiddenParts(visible: boolean)
-	for _, p in self.object.Model:GetChildren() do
+	local model = self.object:FindFirstChild("Model")
+	if not model then
+		return
+	end
+	for _, p in model:GetChildren() do
 		if not p:IsA("BasePart") or not p:GetAttribute("HideOnReload") then
 			continue
 		end

@@ -16,6 +16,19 @@ local LOG = Logging:new("Guns.Utils")
 
 local Utils = {}
 
+local function usesBurstFireRate(settings: {})
+	local fireMode = settings.Gun.FireMode
+	return fireMode == "Burst" or fireMode == "AutoBurst"
+end
+
+local function getBurstSize(settings: {})
+	return settings.Gun.BurstSize or 1
+end
+
+local function getBurstDelay(settings: {})
+	return settings.Gun.BurstDelay or settings.BurstDelay or 0
+end
+
 function Utils.giveGun(player: Player, name: string): Tool
 	-- Give tool
 	local assets = ServerStorage.Assets.Guns.Tools
@@ -60,11 +73,29 @@ function Utils.getDamage(settings: {})
 end
 
 function Utils.getCycleTime(settings: {})
-	local rps = settings.Gun.FireRate
 	local cap = settings.Gun.Capacity
 	local reload = settings.Gun.ReloadTime
+	local fireCooldown = 1 / settings.Gun.FireRate
 
-	local timeToEmpty = (cap - 1) / rps
+	local timeToEmpty = 0
+	if usesBurstFireRate(settings) then
+		local remainingShots = cap
+		local burstSize = getBurstSize(settings)
+		local burstDelay = getBurstDelay(settings)
+
+		while remainingShots > 0 do
+			local shotsThisBurst = math.min(remainingShots, burstSize)
+			timeToEmpty += math.max(0, shotsThisBurst - 1) * burstDelay
+			remainingShots -= shotsThisBurst
+
+			if remainingShots > 0 then
+				timeToEmpty += fireCooldown
+			end
+		end
+	else
+		timeToEmpty = (cap - 1) * fireCooldown
+	end
+
 	return timeToEmpty + reload
 end
 
@@ -76,6 +107,13 @@ function Utils.getDPS(settings: {})
 end
 
 function Utils.getMechanicalRPM(settings: {})
+	if usesBurstFireRate(settings) then
+		local burstSize = getBurstSize(settings)
+		local cycleDuration = (math.max(0, burstSize - 1) * getBurstDelay(settings))
+			+ (1 / settings.Gun.FireRate)
+		return math.round((burstSize / cycleDuration) * 60)
+	end
+
 	return math.round(settings.Gun.FireRate * 60)
 end
 

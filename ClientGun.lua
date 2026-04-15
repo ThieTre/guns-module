@@ -37,6 +37,8 @@ function ClientGun:new(tool: Tool): ClientGun
 	self.lastFire = 0
 	self.lastAimChange = 0
 	self.nextBarrelCount = 1
+	self.fireRateRampStart = nil
+	self.nextFireTime = 0
 	self.canAim = true
 	self.isAiming = false
 
@@ -138,22 +140,117 @@ end
 
 -- =============== Firing ==============
 
-function ClientGun:Fire(pos: Vector3)
-	local fired = self:_FireFunctionality(pos)
+function ClientGun:Fire(
+	pos: Vector3,
+	kwargs: {
+		ignoreFireCheck: boolean?,
+	}?
+): boolean
+	local fired = self:_FireFunctionality(pos, kwargs)
 	if not fired then
-		return
+		return false
 	end
 	self:_FireEffects()
 	self:_FireAnimations()
 	self:_FireInterface()
+
+	return true
+end
+
+function ClientGun:_UsesBurstFireRate(): boolean
+	local fireMode = self.settings.Gun.FireMode
+	return fireMode == "Burst" or fireMode == "AutoBurst"
+end
+
+function ClientGun:_GetFireRateRampSettings(): {}?
+	local rampSettings = self.settings.Gun.FireRateRamp
+	if not rampSettings then
+		return nil
+	end
+
+	local duration = rampSettings.Duration or 0
+	local targetRate = self.settings.Gun.FireRate
+	local startRatio = rampSettings.StartRatio
+
+	if duration <= 0 or not startRatio or startRatio <= 0 or startRatio >= 1 then
+		return nil
+	end
+
+	return {
+		Duration = duration,
+		StartRate = targetRate * startRatio,
+	}
+end
+
+function ClientGun:_GetBurstSize(): number
+	return self.settings.Gun.BurstSize or 1
+end
+
+function ClientGun:_GetBurstDelay(): number
+	return self.settings.Gun.BurstDelay or self.settings.BurstDelay or 0
+end
+
+function ClientGun:_GetBaseFireCooldownDuration(): number
+	return 1 / self.settings.Gun.FireRate
+end
+
+function ClientGun:_GetHeldFireDuration(): number
+	if not self.fireRateRampStart then
+		return 0
+	end
+
+	return tick() - self.fireRateRampStart
+end
+
+function ClientGun:_GetCurrentFireRate(): number
+	local rampSettings = self:_GetFireRateRampSettings()
+	if not rampSettings or not self.fireRateRampStart then
+		return self.settings.Gun.FireRate
+	end
+
+	local alpha = math.clamp(self:_GetHeldFireDuration() / rampSettings.Duration, 0, 1)
+	return rampSettings.StartRate
+		+ ((self.settings.Gun.FireRate - rampSettings.StartRate) * alpha)
+end
+
+function ClientGun:_GetFireCooldownDuration(): number
+	return 1 / self:_GetCurrentFireRate()
+end
+
+function ClientGun:_LockFireCooldown(duration: number?)
+	duration = duration or 0
+	self.nextFireTime = math.max(self.nextFireTime or 0, tick() + duration)
+end
+
+function ClientGun:_GetShotIntervalDuration(): number
+	if self:_UsesBurstFireRate() and self:_GetBurstSize() > 1 then
+		return self:_GetBurstDelay()
+	end
+
+	return self:_GetFireCooldownDuration()
+end
+
+function ClientGun:_GetBurstCycleDuration(): number
+	local burstSize = self:_GetBurstSize()
+	local cycleDuration = self:_GetFireCooldownDuration()
+
+	if burstSize > 1 then
+		cycleDuration += (burstSize - 1) * self:_GetBurstDelay()
+	end
+
+	return cycleDuration
+end
+
+function ClientGun:ResetFireRateRamp()
+	self.fireRateRampStart = nil
 end
 
 function ClientGun:_FireFunctionality(
 	pos,
 	kwargs: {
-		ignoreFireCheck: boolean,
-		includeEffects: boolean,
-	}
+		ignoreFireCheck: boolean?,
+		includeEffects: boolean?,
+	}?
 ): boolean
 	kwargs = kwargs or {}
 
@@ -208,7 +305,13 @@ function ClientGun:_FireFunctionality(
 
 	-- Firing
 	local thisFire = tick()
+	if not self.fireRateRampStart then
+		self.fireRateRampStart = thisFire
+	end
 	self.lastFire = thisFire
+	if not kwargs.ignoreFireCheck and not self:_UsesBurstFireRate() then
+		self:_LockFireCooldown(self:_GetFireCooldownDuration())
+	end
 	self.currentAmmo -= 1
 	if self.fireDelay then
 		task.delay(self.fireDelay, fire)
@@ -219,14 +322,11 @@ function ClientGun:_FireFunctionality(
 	-- Recoil
 	if not self.isMobile and not SETTINGS.RecoilDisabled then
 		Strafer.TargetVertAngleOffset += self.settings.Gun.VerticalRecoil
-		task.delay(
-			math.clamp((1 / self.settings.Gun.FireRate) * 1.5, 0, 0.5),
-			function()
-				if self.lastFire == thisFire then
-					Strafer.TargetVertAngleOffset = 0
-				end
+		task.delay(math.clamp(self:_GetShotIntervalDuration() * 1.5, 0, 0.5), function()
+			if self.lastFire == thisFire then
+				Strafer.TargetVertAngleOffset = 0
 			end
-		)
+		end)
 	end
 
 	if self.currentAmmo < 1 then
@@ -248,7 +348,7 @@ function ClientGun:_FireAnimations()
 
 	-- Fire animations
 	if self.animManager["Bolt"] and self.currentAmmo > 0 then
-		task.delay((1 / self.settings.Gun.FireRate) * 0.3, function()
+		task.delay(self:_GetShotIntervalDuration() * 0.3, function()
 			self.animManager["Bolt"]:Play()
 			self.effectsManager:Run("Bolt")
 		end)
@@ -288,7 +388,7 @@ end
 
 function ClientGun:_CanFire()
 	local factors = {
-		tick() - self.lastFire >= 1 / self.settings.Gun.FireRate,
+		tick() >= (self.nextFireTime or 0),
 		self.object.Parent == self.character,
 		self.currentAmmo > 0,
 		not self.isReloading,
@@ -306,6 +406,7 @@ function ClientGun:Reload(force: boolean?)
 		return false
 	end
 
+	self:ResetFireRateRamp()
 	self:_ReloadEffects()
 	self:_ReloadFunctionality()
 
@@ -513,6 +614,7 @@ function ClientGun:Unequip()
 	if not self.isEquipped then
 		return
 	end
+	self:ResetFireRateRamp()
 	self:ToggleAim(false)
 	Strafer:SetEnabled(false)
 	self.ui.Dot.Visible = false
@@ -602,9 +704,6 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 	local fireTemplate = gun:WaitForChild("Handle"):FindFirstChild("Fire")
 	if fireTemplate then
 		fireTemplate:WaitForChild("EqualizerSoundEffect")
-		if (bulletsPerShot or 1) > 1 then
-			fireTemplate.Volume /= bulletsPerShot
-		end
 		soundCache = ICache:new(fireTemplate, { parent = handle })
 	end
 

@@ -1,14 +1,20 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
 local Instances = require(Modules.Mega.Instances)
+local Decorators = require(Modules.Mega.Replication.Decorators)
 local ServerCaster = require(Modules.Casting.ServerCaster)
 local EffectsManager = require(Modules.Mega.Utils.EffectsManager)
+local Notification = require(Modules.Mega.Interface.Notification)
+local Damage = require(Modules.Damage.Damage)
 
 local LOG = Logging:new("Guns.ServerGun")
 local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local FLOAT_TOLERANCE = 1e-6
+local CASTING_SETTINGS = require(ReplicatedStorage.Settings.Casting)
+local GUIDED_SETTINGS = CASTING_SETTINGS.GuidedLock or {}
 
 -----------------------------------------------------------
 ---------------------- Server Gun -------------------------
@@ -92,6 +98,58 @@ function ServerGun:_OnServerInvoke(player: Player, typ: string, ...)
 	end
 end
 
+function ServerGun:_WarnGuidedTargetDriver(targetVehicle: Model?)
+	if self.settings.Caster.TrailEffect ~= "HomingTarget" then
+		return
+	end
+	if not targetVehicle or not targetVehicle.Parent then
+		return
+	end
+	if not targetVehicle:HasTag("Vehicle") then
+		return
+	end
+	local userId = targetVehicle:GetAttribute("DriverUserId")
+	if not userId then
+		return
+	end
+
+	local targetPart = targetVehicle:FindFirstChild("Body")
+		and targetVehicle.Body:FindFirstChild("Main")
+	if not targetPart or not targetPart:IsA("BasePart") then
+		return
+	end
+
+	local maxDistance = self.settings.Caster.MaxDistance or math.huge
+	local distance = (targetPart.Position - self.firePoint.WorldPosition).Magnitude
+	if distance > maxDistance * 1.1 then
+		return
+	end
+
+	local driverPlayer = Players:GetPlayerByUserId(userId)
+	if not driverPlayer or driverPlayer == self.player then
+		return
+	end
+
+	local cooldown = GUIDED_SETTINGS.DriverWarningCooldown or 7
+	local now = os.time()
+	local lastWarned = targetVehicle:GetAttribute("_LastGuideWarned") or -cooldown
+	if now - lastWarned < cooldown then
+		return
+	end
+	targetVehicle:SetAttribute("_LastGuideWarned", now)
+
+	Notification.notify(
+		driverPlayer,
+		"Guided missile incoming! Aversion tactics reccomended.",
+		{
+			Title = "Warning",
+			Sound = "Incoming",
+			Color = Color3.fromHex("#ff6565"),
+			QueuePos = 1,
+		}
+	)
+end
+
 function ServerGun:_ResolveOwnership()
 	if self.object.Parent:IsA("Backpack") then
 		self.player = self.object:FindFirstAncestorWhichIsA("Player")
@@ -155,7 +213,16 @@ function ServerGun:SetCurrentAmmo(value: number)
 	end
 end
 
-function ServerGun:_OnCastEvent(...): boolean
+function ServerGun:_OnCastEvent(
+	player: Player,
+	startPos: Vector3,
+	endPos: Vector3,
+	id: number,
+	metadata: {
+		speed: number?,
+		guidedTarget: Model?,
+	}?
+): boolean
 	if self.currentAmmo <= 0 then
 		LOG:Debug("Cast event rejected due to no remaining ammo")
 		return false
@@ -181,7 +248,15 @@ function ServerGun:_OnCastEvent(...): boolean
 	end
 
 	if self.castType ~= "Self" then
-		local rayResults: RaycastResult = self.__servercaster._OnCastEvent(self, ...)
+		local rayResults: RaycastResult = self.__servercaster._OnCastEvent(
+			self,
+			player,
+			startPos,
+			endPos,
+			id,
+			metadata
+		)
+		self:_WarnGuidedTargetDriver(metadata and metadata.guidedTarget)
 
 		for _, player in game.Players:GetPlayers() do
 			if player == self.player then

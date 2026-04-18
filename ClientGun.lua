@@ -295,7 +295,7 @@ function ClientGun:_FireFunctionality(
 				end
 			end
 			self:Cast(pos, spreadAdj, {
-				GuidedTargetVehicle = guidedTargetVehicle,
+				guidedTarget = guidedTargetVehicle,
 			})
 		end
 		if kwargs.includeEffects then

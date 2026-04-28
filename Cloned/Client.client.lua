@@ -27,6 +27,7 @@ local PlayerSettings = require(Modules.Mega.Data.PlayerSettings)
 local AMS = require(Modules.AMS.Controller)
 local Strafer = require(Modules.Strafer)
 local ConnManager = require(Modules.Mega.Utils.ConnManager)
+local Keybinds = require(Modules.Mega.Interface.Keybinds)
 local Damage = require(Modules.Damage.Damage)
 local GuidedTargeting = require(Modules.Casting.GuidedTargeting)
 
@@ -35,7 +36,9 @@ local LOG = Logging:new("Guns.Client")
 local AUTOSHOOT_SETTINGS = SETTINGS.AutoShoot
 
 local mouse = LocalPlayer:GetMouse()
-local isMobile = MiscUtils.getClientPlatform() == "Mobile"
+local platform = MiscUtils.getClientPlatform()
+local isMobile = platform == "Mobile"
+local hasController = MiscUtils.isGamepadConnected()
 
 local connections = ConnManager:new()
 local gun = ClientGun:new(tool)
@@ -53,6 +56,10 @@ if AUTOSHOOT_SETTINGS then
 	shapeCastParams = RaycastParams.new()
 	shapeCastParams.FilterType = Enum.RaycastFilterType.Exclude
 	shapeCastParams.FilterDescendantsInstances = { LocalPlayer.Character }
+end
+
+local function useViewportAim(): boolean
+	return isMobile or hasController
 end
 
 -- ============== Functions =============
@@ -161,7 +168,7 @@ local function getHitFromCone(): (Vector3?, Instance?)
 end
 
 local function getAimRay(): (Vector3, Vector3)
-	if isMobile then
+	if useViewportAim() then
 		local x, y = camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2
 		local ray = camera:ViewportPointToRay(x, y)
 		return ray.Origin, ray.Direction
@@ -193,7 +200,7 @@ local function onHeartbeat()
 	local pos
 	if autoAimPos then
 		pos = autoAimPos
-	elseif isMobile then
+	elseif useViewportAim() then
 		pos = getHitFromViewport()
 	else
 		pos = mouse.Hit.Position
@@ -269,14 +276,27 @@ local function setupDesktop()
 	connections:Add(
 		"inputBegan",
 		UIS.InputBegan:Connect(function(input, gp)
-			if gp then
+			local key = input.KeyCode
+			local allowConsoleInput = (
+				key == Enum.KeyCode.ButtonR2
+				or key == Enum.KeyCode.ButtonL2
+				or key == Enum.KeyCode.ButtonX
+				or key == Enum.KeyCode.ButtonR3
+			)
+			if gp and not allowConsoleInput then
 				return
 			end
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
 				setMouseDown(true)
+			elseif key == Enum.KeyCode.ButtonR2 then
+				setMouseDown(true)
 			elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
 				gun:ToggleAim(true)
-			elseif input.KeyCode == Enum.KeyCode.R then
+			elseif key == Enum.KeyCode.ButtonL2 then
+				gun:ToggleAim(true)
+			elseif key == Enum.KeyCode.R then
+				gun:Reload()
+			elseif key == Enum.KeyCode.ButtonX then
 				gun:Reload()
 			end
 		end)
@@ -284,10 +304,14 @@ local function setupDesktop()
 
 	connections:Add(
 		"inputEnd",
-		UIS.InputEnded:Connect(function(input, gp)
+		UIS.InputEnded:Connect(function(input, _gp)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
 				setMouseDown(false)
+			elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
+				setMouseDown(false)
 			elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+				gun:ToggleAim(false)
+			elseif input.KeyCode == Enum.KeyCode.ButtonL2 then
 				gun:ToggleAim(false)
 			end
 		end)
@@ -327,7 +351,7 @@ local function setupAutoshoot()
 			if shapeCastParams then
 				aimPos, hit = getHitFromCone()
 			else
-				if isMobile then
+				if useViewportAim() then
 					aimPos, hit = getHitFromViewport()
 				else
 					hit = mouse.Target
@@ -365,6 +389,31 @@ local function setupAutoshoot()
 	end)
 end
 
+local function refreshControllerKeybinds()
+	Keybinds.clear(tool.Name)
+
+	if not gun.isEquipped or not hasController then
+		return
+	end
+
+	Keybinds.addKeybind(Enum.KeyCode.ButtonR2, {
+		description = "Fire",
+		group = tool.Name,
+	})
+	Keybinds.addKeybind(Enum.KeyCode.ButtonL2, {
+		description = "Aim",
+		group = tool.Name,
+	})
+	Keybinds.addKeybind(Enum.KeyCode.ButtonX, {
+		description = "Reload",
+		group = tool.Name,
+	})
+	Keybinds.addKeybind(Enum.KeyCode.ButtonR3, {
+		description = "Swap View",
+		group = tool.Name,
+	})
+end
+
 local function syncGuidedTargeting()
 	if guidedTargeting then
 		guidedTargeting:Destroy(true)
@@ -386,13 +435,15 @@ end
 
 local function onEquip()
 	connections:Add("heartbeat", RunService.Heartbeat:Connect(onHeartbeat))
-	if isMobile then
-		setupMobile()
-	else
-		setupDesktop()
-	end
 
 	gun:Equip()
+	connections:Add(
+		"gamepadConnection",
+		MiscUtils.watchGamepadConnection(function(connected)
+			hasController = connected
+			refreshControllerKeybinds()
+		end)
+	)
 	syncGuidedTargeting()
 	local autoShootMode = AUTOSHOOT_SETTINGS.Mode
 	if isMobile then
@@ -421,6 +472,7 @@ local function onUnEquip()
 	if isMobile then
 		mobileCanvas.Visible = false
 	end
+	Keybinds.clear(tool.Name)
 end
 
 -- ============== Connections =============

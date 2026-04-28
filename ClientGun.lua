@@ -463,7 +463,17 @@ function ClientGun:ToggleAim(enabled: boolean)
 
 	if enabled then
 		self:_RequestTorsoLock(true)
+		local defaultSettings = Strafer.CameraSettings.DefaultShoulder
 		local zoomSettings = Strafer.CameraSettings.ZoomedShoulder
+		if math.abs(defaultSettings.Offset.X) < 0.1 then
+			defaultSettings.Offset =
+				Vector3.new(2.25, defaultSettings.Offset.Y, defaultSettings.Offset.Z)
+		end
+		zoomSettings.CanSwitchShoulder = true
+		if math.abs(zoomSettings.Offset.X) < 0.1 then
+			zoomSettings.Offset =
+				Vector3.new(1.5, zoomSettings.Offset.Y, zoomSettings.Offset.Z)
+		end
 		local mobileAimAdj = 1
 		if self.isMobile and not self.settings.Gun.Scope then
 			mobileAimAdj = SETTINGS.MobileAimMult
@@ -477,7 +487,6 @@ function ClientGun:ToggleAim(enabled: boolean)
 		self.effectsManager:Run("ZoomIn")
 		if scopeSettings then
 			self.ui.Dot.Visible = false
-			Strafer:SetShoulderDirection(1)
 			self:_UpdateScopeUI(scopeSettings, true)
 			local gunLength = (
 				self.settings.Caster.FirePoint.WorldCFrame.Position
@@ -485,7 +494,7 @@ function ClientGun:ToggleAim(enabled: boolean)
 			).Magnitude * 1.5
 			local crouchAdj = AMS.isCrouching and 0 or 1
 			-- Setup camera
-			zoomSettings.Offset = CFrame.new(0.7, 1.2 * crouchAdj, -gunLength - 1)
+			zoomSettings.Offset = Vector3.new(0.7, 1.2 * crouchAdj, -gunLength - 1)
 		else
 			zoomSettings.Offset = Strafer.CameraSettings.DefaultShoulder.Offset
 		end
@@ -590,6 +599,12 @@ function ClientGun:Equip()
 	self.object:SetAttribute("IsEquipped", true)
 
 	-- Strafer
+	local defaultSettings = Strafer.CameraSettings.DefaultShoulder
+	defaultSettings.CanSwitchShoulder = true
+	if math.abs(defaultSettings.Offset.X) < 0.1 then
+		defaultSettings.Offset =
+			Vector3.new(2.25, defaultSettings.Offset.Y, defaultSettings.Offset.Z)
+	end
 	Strafer:SetActiveCameraSettings("DefaultShoulder")
 	Strafer.Target = self.hrp
 	Strafer:SetEnabled(true)

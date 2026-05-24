@@ -58,6 +58,14 @@ if AUTOSHOOT_SETTINGS then
 	shapeCastParams.FilterDescendantsInstances = { LocalPlayer.Character }
 end
 
+local function shouldShowMobileCanvas(): boolean
+	return isMobile and not hasController
+end
+
+local function refreshMobileCanvasVisibility()
+	mobileCanvas.Visible = gun.isEquipped and shouldShowMobileCanvas()
+end
+
 local function useViewportAim(): boolean
 	return isMobile or hasController
 end
@@ -442,18 +450,23 @@ local function onEquip()
 		MiscUtils.watchGamepadConnection(function(connected)
 			hasController = connected
 			refreshControllerKeybinds()
+			refreshMobileCanvasVisibility()
 		end)
 	)
 	syncGuidedTargeting()
 	local autoShootMode = AUTOSHOOT_SETTINGS.Mode
 	if isMobile then
-		mobileCanvas.Visible = true
 		setupMobile()
+		refreshMobileCanvasVisibility()
+	end
+
+	setupDesktop()
+
+	if isMobile then
 		if autoShootMode == "Mobile" then
 			setupAutoshoot()
 		end
 	else
-		setupDesktop()
 		if autoShootMode == "Any" then
 			setupAutoshoot()
 		end

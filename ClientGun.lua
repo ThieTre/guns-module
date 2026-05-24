@@ -797,7 +797,8 @@ function ClientGun._setupWelding(gun: Tool)
 		PlayerUtils.waitForObjects(owner, "Character", "Humanoid")
 	local torso = character:WaitForChild("UpperTorso", 7)
 	if not torso then
-		error("Upper torso not found")
+		LOG:Debug("Upper torso not found")
+		return
 	end
 	-- Attempt to find open slot. It might take a little time for
 	-- an overwritten tool to be destroyed so we have to wrap this in

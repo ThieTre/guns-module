@@ -4,6 +4,7 @@ local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
 local Damage = require(Modules.Damage.Damage)
+local PlayerData = require(Modules.PlayerData)
 
 local scripts = script.Parent.Cloned
 

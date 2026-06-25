@@ -186,15 +186,24 @@ local function getAimRay(): (Vector3, Vector3)
 	return ray.Origin, ray.Direction
 end
 
+local function getControlledDroneAimPosition(): Vector3
+	local maxDistance = gun.settings.Caster.MaxDistance or 10000
+	return camera.CFrame.Position + camera.CFrame.LookVector * maxDistance
+end
+
 local autoAimPos: Vector3? = nil
 local function onHeartbeat()
-	if guidedTargeting then
+	local isPilotingControlledDrone = gun:IsPilotingControlledDrone()
+	local isProjectileLimitBlocked = gun:IsProjectileLaunchBlockedByActiveLimit()
+	gun:SetActiveProjectileLimitBlocked(isProjectileLimitBlocked)
+
+	if guidedTargeting and not isPilotingControlledDrone then
 		local aimOrigin, aimDirection = getAimRay()
 		guidedTargeting:Update(aimOrigin, aimDirection)
 	end
 
-	if not mouseDown or isFiring then
-		if not mouseDown and not isFiring then
+	if not mouseDown or isFiring or isProjectileLimitBlocked then
+		if not isFiring and (not mouseDown or isProjectileLimitBlocked) then
 			gun:ResetFireRateRamp()
 		end
 		return
@@ -206,7 +215,9 @@ local function onHeartbeat()
 	end
 
 	local pos
-	if autoAimPos then
+	if isPilotingControlledDrone then
+		pos = getControlledDroneAimPosition()
+	elseif autoAimPos then
 		pos = autoAimPos
 	elseif useViewportAim() then
 		pos = getHitFromViewport()
@@ -260,6 +271,9 @@ local function setupMobile()
 	connections:Add(
 		"reload",
 		mobileCanvas.Reload.MouseButton1Up:Connect(function()
+			if gun:IsPilotingControlledDrone() then
+				return
+			end
 			setMouseDown(false)
 			gun:Reload()
 		end)
@@ -268,6 +282,9 @@ local function setupMobile()
 	connections:Add(
 		"aim",
 		mobileCanvas.Aim.MouseButton1Up:Connect(function()
+			if gun:IsPilotingControlledDrone() then
+				return
+			end
 			gun:ToggleAim(not gun.isAiming)
 		end)
 	)
@@ -275,6 +292,9 @@ local function setupMobile()
 	connections:Add(
 		"view",
 		mobileCanvas.View.MouseButton1Up:Connect(function()
+			if gun:IsPilotingControlledDrone() then
+				return
+			end
 			Strafer:SetShoulderDirection(-1 * Strafer.ShoulderDirection)
 		end)
 	)
@@ -292,6 +312,14 @@ local function setupDesktop()
 				or key == Enum.KeyCode.ButtonR3
 			)
 			if gp and not allowConsoleInput then
+				return
+			end
+			if gun:IsPilotingControlledDrone() then
+				if input.UserInputType == Enum.UserInputType.MouseButton1 then
+					setMouseDown(true)
+				elseif key == Enum.KeyCode.ButtonR2 then
+					setMouseDown(true)
+				end
 				return
 			end
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -313,6 +341,14 @@ local function setupDesktop()
 	connections:Add(
 		"inputEnd",
 		UIS.InputEnded:Connect(function(input, _gp)
+			if gun:IsPilotingControlledDrone() then
+				if input.UserInputType == Enum.UserInputType.MouseButton1 then
+					setMouseDown(false)
+				elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
+					setMouseDown(false)
+				end
+				return
+			end
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
 				setMouseDown(false)
 			elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
@@ -328,6 +364,10 @@ end
 
 local lastAutoInterval = tick()
 local function setupAutoshoot()
+	if gun:UseControlledDrone() then
+		return
+	end
+
 	if not PlayerSettings:Lookup("AutoShoot", true) then
 		return
 	end
@@ -475,6 +515,7 @@ end
 
 local function onUnEquip()
 	connections:RemoveAll()
+	gun:CancelControlledDrone(true)
 	gun:Unequip()
 	if guidedTargeting then
 		guidedTargeting:Destroy(true)

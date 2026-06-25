@@ -1,6 +1,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
@@ -48,8 +49,8 @@ function ClientGun:new(tool: Tool): ClientGun
 	self.currentAmmo = self.settings.Gun.Capacity
 
 	-- Ui
-	self.ui = self.player.PlayerGui.Gun
-	self.hotbar = self.player.PlayerGui.HUD.Hotbar.Tiles
+	self.ui = self.player.PlayerGui:WaitForChild("Gun")
+	self.hotbar = self.player.PlayerGui:WaitForChild("HUD").Hotbar.Tiles
 
 	return self
 end
@@ -261,6 +262,9 @@ function ClientGun:_FireFunctionality(
 	if not kwargs.ignoreFireCheck and not self:_CanFire() then
 		return false
 	end
+	if not self:PrepareProjectileLaunch() then
+		return false
+	end
 
 	local guidedTargetVehicle = nil
 	if self:UseGuidedLock() then
@@ -330,9 +334,11 @@ function ClientGun:_FireFunctionality(
 	end
 
 	if self.currentAmmo < 1 then
-		task.spawn(function()
-			self:Reload()
-		end)
+		if not self:UseControlledDrone() then
+			task.spawn(function()
+				self:Reload()
+			end)
+		end
 	end
 
 	return true
@@ -357,13 +363,39 @@ function ClientGun:_FireAnimations()
 end
 
 function ClientGun:_FireInterface()
+	self:_RefreshHotbarState()
+end
+
+function ClientGun:_RefreshHotbarState()
 	local slot = self:_GetSlot()
-	self.hotbar[slot].Count.Text = math.floor(self.currentAmmo)
-	if self.currentAmmo / self.settings.Gun.Capacity <= 0.15 then
-		self.hotbar[slot].Count.TextColor3 = Color3.new(1, 0.376471, 0.376471)
-	else
-		self.hotbar[slot].Count.TextColor3 = Color3.new(1, 1, 1)
+	local tile = self.hotbar[slot]
+	if not tile then
+		return
 	end
+
+	tile.Count.Text = math.floor(self.currentAmmo)
+
+	local blocked = tile:FindFirstChild("Blocked")
+	if blocked then
+		blocked.Visible = self._activeProjectileLimitBlocked == true
+	end
+
+	if self._activeProjectileLimitBlocked then
+		tile.Count.TextColor3 = Color3.new(1, 0.760784, 0.329412)
+	elseif self.currentAmmo / self.settings.Gun.Capacity <= 0.15 then
+		tile.Count.TextColor3 = Color3.new(1, 0.376471, 0.376471)
+	else
+		tile.Count.TextColor3 = Color3.new(1, 1, 1)
+	end
+end
+
+function ClientGun:SetActiveProjectileLimitBlocked(isBlocked: boolean)
+	if self._activeProjectileLimitBlocked == isBlocked then
+		return
+	end
+
+	self._activeProjectileLimitBlocked = isBlocked
+	self:_RefreshHotbarState()
 end
 
 function ClientGun:_FireEffects()
@@ -393,6 +425,7 @@ function ClientGun:_CanFire()
 		self.currentAmmo > 0,
 		not self.isReloading,
 		self.humanoid.Health > 0,
+		not LocalPlayer:GetAttribute("ControlsLockEnabled"),
 	}
 	return not table.find(factors, false)
 end
@@ -400,6 +433,10 @@ end
 -- =============== Reloading ==============
 
 function ClientGun:Reload(force: boolean?)
+	if self:IsPilotingControlledDrone() then
+		return false
+	end
+
 	local canReload = force
 		or (not self.isReloading and self.currentAmmo ~= self.settings.Gun.Capacity)
 	if not canReload then
@@ -410,9 +447,7 @@ function ClientGun:Reload(force: boolean?)
 	self:_ReloadEffects()
 	self:_ReloadFunctionality()
 
-	local slot = self:_GetSlot()
-	self.hotbar[slot].Count.Text = self.currentAmmo
-	self.hotbar[slot].Count.TextColor3 = Color3.new(1, 1, 1)
+	self:_RefreshHotbarState()
 end
 
 function ClientGun:_ReloadFunctionality()
@@ -444,6 +479,10 @@ end
 -- =============== Aiming ==============
 
 function ClientGun:ToggleAim(enabled: boolean)
+	if self:IsPilotingControlledDrone() then
+		return
+	end
+
 	if not self.canAim or self.isAiming == enabled then
 		return
 	end
@@ -531,6 +570,34 @@ function ClientGun:ToggleAim(enabled: boolean)
 	end
 end
 
+function ClientGun:_OnControlledDroneControlAcquired(_cast: {})
+	if self._controlledDroneCameraOverrideActive then
+		return
+	end
+
+	self._controlledDroneCameraOverrideActive = true
+
+	if self.isAiming then
+		self:ToggleAim(false)
+	end
+
+	if Strafer.IsEnabled then
+		Strafer:SetEnabled(false)
+	end
+end
+
+function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: boolean)
+	if isTransfer or not self._controlledDroneCameraOverrideActive then
+		return
+	end
+
+	self._controlledDroneCameraOverrideActive = false
+	self.isAiming = false
+	Strafer:SetEnabled(false)
+	UIS.MouseBehavior = Enum.MouseBehavior.Default
+	UIS.MouseIconEnabled = true
+end
+
 function ClientGun:_UpdateScopeUI(scopeSettings: {}, enabled: boolean)
 	local scope = self.ui.Scope
 	scope.Reticle.Image = scopeSettings.ReticleImage or ""
@@ -613,7 +680,7 @@ function ClientGun:Equip()
 
 	-- Ui
 	self.ui.Dot.Visible = true
-	self.hotbar[self:_GetSlot()].Count.Text = math.floor(self.currentAmmo)
+	self:_RefreshHotbarState()
 
 	-- Equip
 	self.isEquipped = self.object.Parent ~= self.player.Backpack

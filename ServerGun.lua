@@ -240,15 +240,13 @@ function ServerGun:_OnCastEvent(
 		end
 	end
 
-	self:SetCurrentAmmo(self.currentAmmo - 1 / self.bulletsPerShot)
-
 	local isValid = self:_CheckROF()
 	if not isValid then
 		return false
 	end
 
 	if self.castType ~= "Self" then
-		local rayResults: RaycastResult = self.__servercaster._OnCastEvent(
+		local rayResults, accepted = self.__servercaster._OnCastEvent(
 			self,
 			player,
 			startPos,
@@ -256,6 +254,9 @@ function ServerGun:_OnCastEvent(
 			id,
 			metadata
 		)
+		if accepted == false then
+			return false
+		end
 		self:_WarnGuidedTargetDriver(metadata and metadata.guidedTarget)
 
 		for _, player in game.Players:GetPlayers() do
@@ -269,6 +270,7 @@ function ServerGun:_OnCastEvent(
 		end
 	end
 
+	self:SetCurrentAmmo(self.currentAmmo - 1 / self.bulletsPerShot)
 	self.bucketSize += 1
 
 	return true

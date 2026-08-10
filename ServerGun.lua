@@ -8,14 +8,12 @@ local Decorators = require(Modules.Mega.Replication.Decorators)
 local ServerCaster = require(Modules.Casting.ServerCaster)
 local EffectsManager = require(Modules.Mega.Utils.EffectsManager)
 local Notification = require(Modules.Mega.Interface.Notification)
-local Damage = require(Modules.Damage.Damage)
 
 local LOG = Logging:new("Guns.ServerGun")
 local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local FLOAT_TOLERANCE = 1e-6
 local CASTING_SETTINGS = require(ReplicatedStorage.Settings.Casting)
 local GUIDED_SETTINGS = CASTING_SETTINGS.GuidedLock or {}
-
 -----------------------------------------------------------
 ---------------------- Server Gun -------------------------
 -----------------------------------------------------------
@@ -39,7 +37,10 @@ function ServerGun:new(object: Tool | Model)
 	)
 	self.hasBeenFired = false
 	self.castType = self.settings.Caster.Type
-
+	self.nextBarrelCount = 1
+	self.reloadRequested = false
+	self.reloadToken = 0
+	self.pendingBurstShotsRemaining = 0
 	self:SetCurrentAmmo(self.settings.Gun.Capacity)
 
 	return self
@@ -68,7 +69,6 @@ function ServerGun:_Setup()
 end
 
 function ServerGun:_SetupModel()
-	-- Setup model
 	for _, part: BasePart in self.object.Model:GetChildren() do
 		part.CanCollide = false
 		part.CanQuery = false
@@ -81,7 +81,6 @@ function ServerGun:_SetupModel()
 		{ LowGain = 0, MidGain = 0 }
 	)
 
-	-- Adjust reload sound duration
 	local handle = self.object:WaitForChild("Handle", 3)
 	if not handle.Reload.IsLoaded then
 		handle.Reload.Loaded:Wait()
@@ -167,6 +166,26 @@ function ServerGun:_UsesBurstFireRate(): boolean
 	return fireMode == "Burst" or fireMode == "AutoBurst"
 end
 
+function ServerGun:_GetFireRateRampSettings(): {}?
+	local rampSettings = self.settings.Gun.FireRateRamp
+	if not rampSettings then
+		return nil
+	end
+
+	local duration = rampSettings.Duration or 0
+	local targetRate = self.settings.Gun.FireRate
+	local startRatio = rampSettings.StartRatio
+
+	if duration <= 0 or not startRatio or startRatio <= 0 or startRatio >= 1 then
+		return nil
+	end
+
+	return {
+		Duration = duration,
+		StartRate = targetRate * startRatio,
+	}
+end
+
 function ServerGun:_GetBurstSize(): number
 	return self.settings.Gun.BurstSize or 1
 end
@@ -175,8 +194,61 @@ function ServerGun:_GetBurstDelay(): number
 	return self.settings.Gun.BurstDelay or self.settings.BurstDelay or 0
 end
 
+function ServerGun:_GetHeldFireDuration(): number
+	if not self.fireRateRampStart then
+		return 0
+	end
+
+	return tick() - self.fireRateRampStart
+end
+
+function ServerGun:_GetCurrentFireRate(): number
+	local rampSettings = self:_GetFireRateRampSettings()
+	if not rampSettings or not self.fireRateRampStart then
+		return self.settings.Gun.FireRate
+	end
+
+	local alpha = math.clamp(self:_GetHeldFireDuration() / rampSettings.Duration, 0, 1)
+	return rampSettings.StartRate
+		+ ((self.settings.Gun.FireRate - rampSettings.StartRate) * alpha)
+end
+
 function ServerGun:_GetFireCooldownDuration(): number
-	return 1 / self.settings.Gun.FireRate
+	return 1 / self:_GetCurrentFireRate()
+end
+
+function ServerGun:_LockFireCooldown(duration: number?)
+	duration = duration or 0
+	local previousNextFireTime = self.nextServerFireTime or 0
+	local nextFireTime = math.max(previousNextFireTime, tick() + duration)
+	self.nextServerFireTime = nextFireTime
+end
+
+function ServerGun:_RequestReload(ignoreCapacity: boolean?): boolean
+	local isAlreadyFull = (
+		not ignoreCapacity and self.settings.Gun.Capacity == self.currentAmmo
+	)
+	if self.reloadRequested or self.isReloading or isAlreadyFull then
+		return false
+	end
+
+	self.reloadRequested = true
+	task.spawn(function()
+		self:Reload(ignoreCapacity)
+		self.reloadRequested = false
+	end)
+
+	return true
+end
+
+function ServerGun:_ResetServerFireCadence()
+	self.pendingBurstShotsRemaining = 0
+	self.reloadRequested = false
+	self:ResetFireRateRamp()
+end
+
+function ServerGun:ResetFireRateRamp()
+	self.fireRateRampStart = nil
 end
 
 function ServerGun:_SetupROFBucket()
@@ -189,20 +261,29 @@ function ServerGun:_SetupROFBucket()
 		local burstCycleDuration = self:_GetFireCooldownDuration()
 			+ math.max(0, burstSize - 1) * self:_GetBurstDelay()
 
-		-- Include the full burst cycle in fire rate, be a little more leniate in bucket size
 		trueFireRate = burstSize / burstCycleDuration
 		leaniance *= 1.05
 	end
 	self.bucketSize = 0
+	self.bucketRefillWindow = refillWindow
+	self.bucketResetAt = tick() + refillWindow
 	self.maxBucketSize = (trueFireRate * refillWindow * (leaniance + 1))
 		* self.bulletsPerShot
-	task.spawn(function()
-		-- Refill bucket
-		while self.object.Parent do
-			task.wait(refillWindow)
-			self.bucketSize = 0
-		end
-	end)
+end
+
+function ServerGun:_RefreshROFBucket(now: number?)
+	now = now or tick()
+	local bucketResetAt = self.bucketResetAt
+	local refillWindow = self.bucketRefillWindow
+	if not bucketResetAt or not refillWindow then
+		return
+	end
+	if now < bucketResetAt then
+		return
+	end
+
+	self.bucketSize = 0
+	self.bucketResetAt = now + refillWindow
 end
 
 function ServerGun:SetCurrentAmmo(value: number)
@@ -211,6 +292,18 @@ function ServerGun:SetCurrentAmmo(value: number)
 	else
 		self.currentAmmo = value
 	end
+end
+
+function ServerGun:_NotifyCastRejected(player: Player, id: number?)
+	if id == nil then
+		return
+	end
+
+	self:GetScorer(player):MarkCastRejected(id)
+	self.remoteEvent:FireClient(player, {
+		Type = "CastRejected",
+		Id = id,
+	})
 end
 
 function ServerGun:_OnCastEvent(
@@ -225,6 +318,7 @@ function ServerGun:_OnCastEvent(
 ): boolean
 	if self.currentAmmo <= 0 then
 		LOG:Debug("Cast event rejected due to no remaining ammo")
+		self:_NotifyCastRejected(player, id)
 		return false
 	end
 
@@ -242,6 +336,7 @@ function ServerGun:_OnCastEvent(
 
 	local isValid = self:_CheckROF()
 	if not isValid then
+		self:_NotifyCastRejected(player, id)
 		return false
 	end
 
@@ -255,16 +350,17 @@ function ServerGun:_OnCastEvent(
 			metadata
 		)
 		if accepted == false then
+			self:_NotifyCastRejected(player, id)
 			return false
 		end
 		self:_WarnGuidedTargetDriver(metadata and metadata.guidedTarget)
 
-		for _, player in game.Players:GetPlayers() do
-			if player == self.player then
+		for _, otherPlayer in game.Players:GetPlayers() do
+			if otherPlayer == self.player then
 				continue
 			end
 			self.remoteEvent:FireClient(
-				player,
+				otherPlayer,
 				(rayResults and rayResults.Distance) or nil
 			)
 		end
@@ -278,8 +374,6 @@ end
 
 function ServerGun:_OnHitEvent(player, ...)
 	if self.castType == "Self" then
-		-- No cast event is ever fired so we have to validate
-		-- cast here
 		local canCast = self:_OnCastEvent()
 		if not canCast then
 			return
@@ -289,10 +383,146 @@ function ServerGun:_OnHitEvent(player, ...)
 end
 
 function ServerGun:_CheckROF(): boolean
+	self:_RefreshROFBucket()
 	if self.bucketSize > self.maxBucketSize then
 		LOG:Warning("Cast event rejected due ROF violation")
 		return false
 	end
+	return true
+end
+
+function ServerGun:_CanDirectFire(): boolean
+	return (
+		tick() >= (self.nextServerFireTime or 0)
+		and self.currentAmmo > 0
+		and not self.isReloading
+	)
+end
+
+function ServerGun:_BroadcastObserverFire(castDistance: number?)
+	for _, player in Players:GetPlayers() do
+		self.remoteEvent:FireClient(player, castDistance)
+	end
+end
+
+function ServerGun:DirectFireAt(
+	dealer: any,
+	pos: Vector3,
+	options: {
+		ignoreFireCheck: boolean?,
+		guidedTarget: Model?,
+		skipROFCheck: boolean?,
+	}?
+): boolean
+	options = options or {}
+
+	local cooldownRemaining = math.max((self.nextServerFireTime or 0) - tick(), 0)
+	if not options.ignoreFireCheck and cooldownRemaining > 0 then
+		return false
+	end
+	if self.isReloading then
+		return false
+	end
+	if self.currentAmmo < 1 then
+		self:_RequestReload()
+		return false
+	end
+	if not options.skipROFCheck and not self:_CheckROF() then
+		return false
+	end
+	if not self:PrepareProjectileLaunch(true) then
+		return false
+	end
+
+	local fireStartedAt = tick()
+	if not self.fireRateRampStart then
+		self.fireRateRampStart = fireStartedAt
+	end
+
+	local previousNextFireTime = self.nextServerFireTime or 0
+	local previousPendingBurstShotsRemaining = self.pendingBurstShotsRemaining
+	local cooldownDuration = self:_GetFireCooldownDuration()
+	local observerFireBroadcasted = false
+	if self:_UsesBurstFireRate() and self:_GetBurstSize() > 1 then
+		if self.pendingBurstShotsRemaining > 0 then
+			self.pendingBurstShotsRemaining -= 1
+		else
+			self.pendingBurstShotsRemaining = self:_GetBurstSize() - 1
+		end
+
+		if self.pendingBurstShotsRemaining > 0 then
+			cooldownDuration = self:_GetBurstDelay()
+		end
+	else
+		self.pendingBurstShotsRemaining = 0
+	end
+
+	self:_LockFireCooldown(cooldownDuration)
+
+	local success, fired = pcall(function()
+		local anyAccepted = false
+		local castDistance = nil
+		for bulletIndex = 1, self.bulletsPerShot do
+			local accepted, currentDistance =
+				self.__servercaster.DirectCast(self, dealer, pos, {
+					guidedTarget = options.guidedTarget,
+					ignoreProjectileLimit = true,
+					observerFireCallback = function(observerCastDistance: number?)
+						if observerFireBroadcasted then
+							return
+						end
+						observerFireBroadcasted = true
+						self:_BroadcastObserverFire(observerCastDistance)
+					end,
+				})
+			if accepted then
+				anyAccepted = true
+				castDistance = castDistance or currentDistance
+			end
+		end
+		if not anyAccepted then
+			self.nextServerFireTime = previousNextFireTime
+			self.pendingBurstShotsRemaining = previousPendingBurstShotsRemaining
+			return false, nil
+		end
+
+		self.hasBeenFired = true
+		self:SetCurrentAmmo(self.currentAmmo - 1)
+		self.bucketSize += self.bulletsPerShot
+
+		self:_WarnGuidedTargetDriver(options.guidedTarget)
+		if not observerFireBroadcasted then
+			self:_BroadcastObserverFire(castDistance)
+		end
+
+		if self.currentAmmo < 1 then
+			self:_RequestReload()
+		end
+
+		return true, castDistance
+	end)
+
+	if not success then
+		error(fired)
+	end
+	if not fired then
+		return false
+	end
+
+	return true
+end
+
+function ServerGun:_IsReloadStillValid(reloadToken: number): boolean
+	if self.reloadToken ~= reloadToken or not self.object.Parent then
+		return false
+	end
+
+	if self.object:IsA("Tool") then
+		local player = self.player
+		local character = player and player.Character
+		return character ~= nil and self.object.Parent == character
+	end
+
 	return true
 end
 
@@ -306,13 +536,25 @@ function ServerGun:Reload(ignoreCapacity: boolean)
 		return self.currentAmmo
 	end
 
+	self:ResetFireRateRamp()
+	self.reloadRequested = false
+	self.reloadToken += 1
+	local reloadToken = self.reloadToken
 	self.isReloading = true
 
 	self.effectsManager:RunAll("Reload")
 
 	self:_SetHiddenParts(false)
 
-	-- Wait reload time
+	local function cancelReload()
+		self.isReloading = false
+		if self.effectsManager["Reload"] then
+			self.effectsManager["Reload"]:Stop()
+		end
+		self:_SetHiddenParts(true)
+		return self.currentAmmo
+	end
+
 	local cancelled = false
 	local cancelCon = self.object:GetPropertyChangedSignal("Parent"):Once(function()
 		cancelled = true
@@ -320,16 +562,17 @@ function ServerGun:Reload(ignoreCapacity: boolean)
 	local start = tick()
 	while (tick() - start) < self.settings.Gun.ReloadTime do
 		task.wait()
-		if cancelled then
-			self.isReloading = false
-			self.effectsManager["Reload"]:Stop()
-			self:_SetHiddenParts(true)
-			return self.currentAmmo
+		if cancelled or not self:_IsReloadStillValid(reloadToken) then
+			cancelCon:Disconnect()
+			return cancelReload()
 		end
 	end
 	cancelCon:Disconnect()
 
-	-- Fill ammo
+	if not self:_IsReloadStillValid(reloadToken) then
+		return cancelReload()
+	end
+
 	self:SetCurrentAmmo(self.settings.Gun.Capacity)
 	self.isReloading = false
 

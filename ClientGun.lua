@@ -137,6 +137,15 @@ function ClientGun:_SetupConnections()
 			task.spawn(self.Reload, self, true)
 		end
 	end
+
+	local remoteEvent: RemoteEvent = self.object:WaitForChild("RemoteEvent")
+	remoteEvent.OnClientEvent:Connect(function(payload)
+		if typeof(payload) ~= "table" or payload.Type ~= "CastRejected" then
+			return
+		end
+
+		self:CancelProjectileCastById(payload.Id)
+	end)
 end
 
 -- =============== Firing ==============
@@ -334,11 +343,9 @@ function ClientGun:_FireFunctionality(
 	end
 
 	if self.currentAmmo < 1 then
-		if not self:UseControlledDrone() then
-			task.spawn(function()
-				self:Reload()
-			end)
-		end
+		task.spawn(function()
+			self:Reload(true)
+		end)
 	end
 
 	return true
@@ -433,7 +440,7 @@ end
 -- =============== Reloading ==============
 
 function ClientGun:Reload(force: boolean?)
-	if self:IsPilotingControlledDrone() then
+	if self:IsPilotingControlledDrone() and not force then
 		return false
 	end
 
@@ -584,6 +591,10 @@ function ClientGun:_OnControlledDroneControlAcquired(_cast: {})
 	if Strafer.IsEnabled then
 		Strafer:SetEnabled(false)
 	end
+
+	if self._OnControlledDroneKeybindsChanged then
+		self:_OnControlledDroneKeybindsChanged(true)
+	end
 end
 
 function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: boolean)
@@ -596,6 +607,12 @@ function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: bool
 	Strafer:SetEnabled(false)
 	UIS.MouseBehavior = Enum.MouseBehavior.Default
 	UIS.MouseIconEnabled = true
+
+	if self._OnControlledDroneKeybindsChanged then
+		self:_OnControlledDroneKeybindsChanged(false)
+	end
+
+	self:_ApplyEquippedStraferState()
 end
 
 function ClientGun:_UpdateScopeUI(scopeSettings: {}, enabled: boolean)
@@ -658,14 +675,11 @@ end
 
 -- =============== Equip/Unequip ==============
 
-function ClientGun:Equip()
-	if self.humanoid.sit then
+function ClientGun:_ApplyEquippedStraferState(force: boolean?)
+	if not force and not self.isEquipped then
 		return
 	end
 
-	self.object:SetAttribute("IsEquipped", true)
-
-	-- Strafer
 	local defaultSettings = Strafer.CameraSettings.DefaultShoulder
 	defaultSettings.CanSwitchShoulder = true
 	if math.abs(defaultSettings.Offset.X) < 0.1 then
@@ -675,6 +689,16 @@ function ClientGun:Equip()
 	Strafer:SetActiveCameraSettings("DefaultShoulder")
 	Strafer.Target = self.hrp
 	Strafer:SetEnabled(true)
+end
+
+function ClientGun:Equip()
+	if self.humanoid.sit then
+		return
+	end
+
+	self.object:SetAttribute("IsEquipped", true)
+
+	self:_ApplyEquippedStraferState(true)
 
 	self:_RequestTorsoLock(false)
 
@@ -791,7 +815,11 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 
 	local emitterAttach = handle.FirePoint:WaitForChild("EmitterAttachment", 3)
 	local emitter: ParticleEmitter = emitterAttach and emitterAttach.Emitter
-	remoteEvent.OnClientEvent:Connect(function(castDistance: number?)
+	remoteEvent.OnClientEvent:Connect(function(castDistance)
+		if typeof(castDistance) == "table" then
+			return
+		end
+
 		if emitter then
 			if castDistance then
 				emitter.Lifetime = NumberRange.new(castDistance / emitter.Speed.Max)
@@ -828,6 +856,7 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 					equalizer.Enabled = false
 				end
 			end)
+
 			if not success then
 				LOG:Warning("Failed to configure distance equalizer: %s", err)
 			end
@@ -836,6 +865,7 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 				soundCache:Return(sound)
 			end)
 		end
+
 		-- Run other effects
 		effectsManager:RunAll("Fire")
 
@@ -851,6 +881,11 @@ end
 
 function ClientGun._setupWelding(gun: Tool)
 	-- Resolve ownership
+
+	if not gun.Parent then
+		return
+	end
+
 	local owner
 	if gun.Parent:IsA("Backpack") then
 		owner = gun.Parent.Parent
@@ -949,11 +984,11 @@ function ClientGun._setupWelding(gun: Tool)
 	weldModel.Parent = weldFolder
 
 	local function setTransparency(transparency: number)
-		for _, p in weldModel:GetChildren() do
-			if not p:IsA("BasePart") then
-				return
+		for _, d in weldModel:GetDescendants() do
+			if not d:IsA("BasePart") and not d:IsA("Texture") then
+				continue
 			end
-			p.Transparency = transparency
+			d.Transparency = transparency
 		end
 	end
 

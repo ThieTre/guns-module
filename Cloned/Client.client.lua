@@ -7,6 +7,10 @@ local ClientGun = require(Modules.Guns.ClientGun)
 
 local LocalPlayer = game.Players.LocalPlayer
 
+if not LocalPlayer.Character then
+	LocalPlayer.CharacterAdded:Wait()
+end
+
 -- ============== Non-owning player =============
 
 local tool: Tool = script.Parent
@@ -39,12 +43,17 @@ local mouse = LocalPlayer:GetMouse()
 local platform = MiscUtils.getClientPlatform()
 local isMobile = platform == "Mobile"
 local hasController = MiscUtils.isGamepadConnected()
+local DRONE_EXIT_KEY = Enum.KeyCode.E
+local DRONE_DETONATE_KEY = Enum.KeyCode.R
+local DRONE_EXIT_GAMEPAD_KEY = Enum.KeyCode.ButtonB
+local DRONE_DETONATE_GAMEPAD_KEY = Enum.KeyCode.ButtonX
 
 local connections = ConnManager:new()
 local gun = ClientGun:new(tool)
 local guidedTargeting = nil
 
 local isFiring = false
+local fireSessionId = 0
 local mouseDown = false
 
 local camera = workspace.CurrentCamera
@@ -78,6 +87,58 @@ local function setMouseDown(status: boolean)
 	if not status and not isFiring then
 		gun:ResetFireRateRamp()
 	end
+end
+
+local function handleControlledDroneInput(input: InputObject): boolean
+	if not gun:IsPilotingControlledDrone() then
+		return false
+	end
+
+	local key = input.KeyCode
+	if key == DRONE_EXIT_KEY or key == DRONE_EXIT_GAMEPAD_KEY then
+		setMouseDown(false)
+		gun:ExitControlledDrone()
+	elseif key == DRONE_DETONATE_KEY or key == DRONE_DETONATE_GAMEPAD_KEY then
+		setMouseDown(false)
+		gun:DetonateControlledDrone()
+	end
+
+	return true
+end
+
+local function isVehicleSeat(seat: BasePart?): boolean
+	local vehicle = seat and seat:FindFirstAncestorWhichIsA("Model")
+	return vehicle ~= nil and vehicle:HasTag("Vehicle")
+end
+
+local function setupControlledDroneSeatExit()
+	local character = LocalPlayer.Character
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not humanoid then
+		return
+	end
+
+	local previousSeat = humanoid.SeatPart
+	connections:Add(
+		"controlledDroneSeatExit",
+		humanoid:GetPropertyChangedSignal("SeatPart"):Connect(function()
+			local seat = humanoid.SeatPart
+			if
+				not seat
+				and previousSeat
+				and isVehicleSeat(previousSeat)
+				and (gun:IsPilotingControlledDrone() or gun:HasActiveControlledDrone())
+			then
+				setMouseDown(false)
+				gun:ExitControlledDrone()
+			end
+			previousSeat = seat
+		end)
+	)
 end
 
 local function getHitFromViewport()
@@ -202,6 +263,11 @@ local function onHeartbeat()
 		guidedTargeting:Update(aimOrigin, aimDirection)
 	end
 
+	if isPilotingControlledDrone then
+		setMouseDown(false)
+		return
+	end
+
 	if not mouseDown or isFiring or isProjectileLimitBlocked then
 		if not isFiring and (not mouseDown or isProjectileLimitBlocked) then
 			gun:ResetFireRateRamp()
@@ -209,15 +275,14 @@ local function onHeartbeat()
 		return
 	end
 	isFiring = true
+	local thisFireSessionId = fireSessionId
 
 	if gun.settings.Gun.FireMode == "Semi" or gun.settings.Gun.FireMode == "Burst" then
 		setMouseDown(false)
 	end
 
 	local pos
-	if isPilotingControlledDrone then
-		pos = getControlledDroneAimPosition()
-	elseif autoAimPos then
+	if autoAimPos then
 		pos = autoAimPos
 	elseif useViewportAim() then
 		pos = getHitFromViewport()
@@ -238,7 +303,17 @@ local function onHeartbeat()
 		local burstDelay = gun:_GetBurstDelay()
 		for _ = 2, gun:_GetBurstSize() do
 			task.wait(burstDelay)
-			if not gun:Fire(pos, { ignoreFireCheck = true }) then
+			if thisFireSessionId ~= fireSessionId or not gun.isEquipped then
+				if thisFireSessionId == fireSessionId then
+					isFiring = false
+				end
+				return
+			end
+			local followPos = pos
+			if gun:IsPilotingControlledDrone() then
+				followPos = getControlledDroneAimPosition()
+			end
+			if not gun:Fire(followPos, { ignoreFireCheck = true }) then
 				break
 			end
 		end
@@ -250,13 +325,18 @@ local function onHeartbeat()
 		task.wait(gun:_GetFireCooldownDuration())
 	end
 
-	isFiring = false
+	if thisFireSessionId == fireSessionId then
+		isFiring = false
+	end
 end
 
 local function setupMobile()
 	connections:Add(
 		"mouseDown",
 		mobileCanvas.Fire.MouseButton1Down:Connect(function()
+			if gun:IsPilotingControlledDrone() then
+				return
+			end
 			setMouseDown(true)
 		end)
 	)
@@ -309,17 +389,13 @@ local function setupDesktop()
 				key == Enum.KeyCode.ButtonR2
 				or key == Enum.KeyCode.ButtonL2
 				or key == Enum.KeyCode.ButtonX
+				or key == Enum.KeyCode.ButtonB
 				or key == Enum.KeyCode.ButtonR3
 			)
 			if gp and not allowConsoleInput then
 				return
 			end
-			if gun:IsPilotingControlledDrone() then
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then
-					setMouseDown(true)
-				elseif key == Enum.KeyCode.ButtonR2 then
-					setMouseDown(true)
-				end
+			if handleControlledDroneInput(input) then
 				return
 			end
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -462,6 +538,38 @@ local function refreshControllerKeybinds()
 	})
 end
 
+local function refreshControlledDroneKeybinds()
+	Keybinds.clear(tool.Name)
+
+	if hasController then
+		Keybinds.addKeybind(DRONE_EXIT_GAMEPAD_KEY, {
+			description = "Exit Drone",
+			group = tool.Name,
+		})
+		Keybinds.addKeybind(DRONE_DETONATE_GAMEPAD_KEY, {
+			description = "Detonate",
+			group = tool.Name,
+		})
+	else
+		Keybinds.addKeybind(DRONE_EXIT_KEY.Name, {
+			description = "Exit Drone",
+			group = tool.Name,
+		})
+		Keybinds.addKeybind(DRONE_DETONATE_KEY.Name, {
+			description = "Detonate",
+			group = tool.Name,
+		})
+	end
+end
+
+function gun:_OnControlledDroneKeybindsChanged(isActive: boolean)
+	if isActive then
+		refreshControlledDroneKeybinds()
+	else
+		refreshControllerKeybinds()
+	end
+end
+
 local function syncGuidedTargeting()
 	if guidedTargeting then
 		guidedTargeting:Destroy(true)
@@ -482,14 +590,20 @@ local function syncGuidedTargeting()
 end
 
 local function onEquip()
+	fireSessionId += 1
 	connections:Add("heartbeat", RunService.Heartbeat:Connect(onHeartbeat))
+	setupControlledDroneSeatExit()
 
 	gun:Equip()
 	connections:Add(
 		"gamepadConnection",
 		MiscUtils.watchGamepadConnection(function(connected)
 			hasController = connected
-			refreshControllerKeybinds()
+			if gun:IsPilotingControlledDrone() then
+				refreshControlledDroneKeybinds()
+			else
+				refreshControllerKeybinds()
+			end
 			refreshMobileCanvasVisibility()
 		end)
 	)
@@ -514,6 +628,7 @@ local function onEquip()
 end
 
 local function onUnEquip()
+	fireSessionId += 1
 	connections:RemoveAll()
 	gun:CancelControlledDrone(true)
 	gun:Unequip()

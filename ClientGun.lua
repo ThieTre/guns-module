@@ -605,6 +605,9 @@ function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: bool
 	self._controlledDroneCameraOverrideActive = false
 	self.isAiming = false
 	Strafer:SetEnabled(false)
+	-- Strafer can restore the FOV it saved before drone control began. Reset it
+	-- before re-enabling Strafer so that value cannot carry into the next drone.
+	workspace.CurrentCamera.FieldOfView = SETTINGS.DefaultFOV
 	UIS.MouseBehavior = Enum.MouseBehavior.Default
 	UIS.MouseIconEnabled = true
 

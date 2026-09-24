@@ -50,7 +50,8 @@ function ClientGun:new(tool: Tool): ClientGun
 
 	-- Ui
 	self.ui = self.player.PlayerGui:WaitForChild("Gun")
-	self.hotbar = self.player.PlayerGui:WaitForChild("HUD").Hotbar.Tiles
+	self.scopeUi = self.player.PlayerGui:WaitForChild("Scope")
+	self.hotbar = self.player.PlayerGui.HUD.Hotbar.Tiles
 
 	return self
 end
@@ -619,7 +620,9 @@ function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: bool
 end
 
 function ClientGun:_UpdateScopeUI(scopeSettings: {}, enabled: boolean)
-	local scope = self.ui.Scope
+	local scope = self.scopeUi.Scope
+	self.defaultScopeSize = self.defaultScopeSize or scope.Size
+	self.defaultReticleSize = self.defaultReticleSize or scope.Reticle.Size
 	scope.Reticle.Image = scopeSettings.ReticleImage or ""
 	scope.Left.BackgroundColor3 = scopeSettings.BackgroundColor or Color3.new()
 	scope.Right.BackgroundColor3 = scopeSettings.BackgroundColor or Color3.new()
@@ -657,12 +660,11 @@ function ClientGun:_UpdateScopeUI(scopeSettings: {}, enabled: boolean)
 	)
 	table.insert(tweens, tween)
 
-	if scopeSettings.ReticleScale then
-		if enabled then
-			scope.Size = scopeSettings.ReticleScale
-		else
-			scope.Size = UDim2.fromScale(1, 1)
-		end
+	scope.Size = self.defaultScopeSize
+	if scopeSettings.ReticleScale and enabled then
+		scope.Reticle.Size = scopeSettings.ReticleScale
+	else
+		scope.Reticle.Size = self.defaultReticleSize
 	end
 
 	for _, tween in tweens do

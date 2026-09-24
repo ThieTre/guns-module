@@ -1,7 +1,7 @@
 local LocalPlayer = game.Players.LocalPlayer
 local PlayerGui = LocalPlayer.PlayerGui
 
-local scope = PlayerGui:WaitForChild("Gun"):WaitForChild("Scope")
+local scope = PlayerGui:WaitForChild("Scope"):WaitForChild("Scope")
 local ret = scope.Reticle
 local left = scope.Left
 local right = scope.Right
@@ -20,9 +20,6 @@ local lastFirepointUpdate
 local RED = Color3.new(1, 0.403922, 0.403922)
 local GREEN = Color3.new(0.4, 1, 0.541176)
 
-ret.AnchorPoint = Vector2.new(0.5, 0.5)
-ret.Position = UDim2.fromScale(0.5, 0.5)
-
 scope.Visible = true
 
 local function round(n)
@@ -34,36 +31,32 @@ local function setUi()
 	local scopeW, scopeH = round(scope.AbsoluteSize.X), round(scope.AbsoluteSize.Y)
 	local retW, retH = round(ret.AbsoluteSize.X), round(ret.AbsoluteSize.Y)
 
-	-- Horizontal gap split (ensures left + right == total gap)
-	local gapX = math.max(0, scopeW - retW)
-	local leftW = math.floor(gapX / 2)
-	local rightW = gapX - leftW
+	local retX = math.max(0, math.floor((scopeW - retW) / 2))
+	local retY = math.max(0, math.floor((scopeH - retH) / 2))
+	local retRight = math.min(scopeW, retX + retW)
+	local retBottom = math.min(scopeH, retY + retH)
+	local centralW = math.max(0, retRight - retX)
 
-	-- Vertical gap split (ensures top + bottom == total gap)
-	local gapY = math.max(0, scopeH - retH)
-	local topH = math.floor(gapY / 2)
-	local bottomH = gapY - topH
-
-	-- Central width is what's left after the side fills
-	local centralW = scopeW - leftW - rightW
+	ret.AnchorPoint = Vector2.zero
+	ret.Position = UDim2.fromOffset(retX, retY)
 
 	-- Left / Right
 	left.AnchorPoint = Vector2.new(0, 0)
 	left.Position = UDim2.fromOffset(0, 0)
-	left.Size = UDim2.fromOffset(leftW, scopeH)
+	left.Size = UDim2.fromOffset(retX, scopeH)
 
 	right.AnchorPoint = Vector2.new(0, 0)
-	right.Position = UDim2.new(1, -rightW, 0, 0)
-	right.Size = UDim2.fromOffset(rightW, scopeH)
+	right.Position = UDim2.fromOffset(retRight, 0)
+	right.Size = UDim2.fromOffset(math.max(0, scopeW - retRight), scopeH)
 
 	-- Top / Bottom (only between left/right)
 	top.AnchorPoint = Vector2.new(0, 0)
-	top.Position = UDim2.fromOffset(leftW, 0)
-	top.Size = UDim2.fromOffset(centralW, topH)
+	top.Position = UDim2.fromOffset(retX, 0)
+	top.Size = UDim2.fromOffset(centralW, retY)
 
 	bottom.AnchorPoint = Vector2.new(0, 0)
-	bottom.Position = UDim2.fromOffset(leftW, scopeH - bottomH)
-	bottom.Size = UDim2.fromOffset(centralW, bottomH)
+	bottom.Position = UDim2.fromOffset(retX, retBottom)
+	bottom.Size = UDim2.fromOffset(centralW, math.max(0, scopeH - retBottom))
 end
 
 local function onFirePointChange()

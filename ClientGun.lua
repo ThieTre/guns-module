@@ -410,7 +410,7 @@ function ClientGun:_FireEffects()
 	if self.fireSoundCache then
 		local sound = self.fireSoundCache:Get()
 		sound:Play()
-		sound.Ended:Connect(function()
+		sound.Ended:Once(function()
 			self.fireSoundCache:Return(sound)
 		end)
 	end
@@ -838,14 +838,19 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 		end
 		if soundCache then
 			-- Configure and play sound
-			local sound: Sound = soundCache:Get()
+			local sound: Sound? = nil
 			local success, err = pcall(function()
-				local equalizer = sound.EqualizerSoundEffect
-				local hrp = PlayerUtils.waitForObjects(LocalPlayer, "HumanoidRootPart")
-				local distance = (handle.FirePoint.WorldPosition - hrp.Position).Magnitude
-				if distance > sound.RollOffMaxDistance then
+				local character = LocalPlayer.Character
+				local hrp = character and character:FindFirstChild("HumanoidRootPart")
+				if not hrp then
 					return
 				end
+				local distance = (handle.FirePoint.WorldPosition - hrp.Position).Magnitude
+				if distance > fireTemplate.RollOffMaxDistance then
+					return
+				end
+				sound = soundCache:Get()
+				local equalizer = sound.EqualizerSoundEffect
 				if distance > SETTINGS.MuffleStartDistance then
 					equalizer.Enabled = true
 					local delta = distance - SETTINGS.MuffleStartDistance
@@ -860,15 +865,19 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 				else
 					equalizer.Enabled = false
 				end
+				sound:Play()
 			end)
 
 			if not success then
-				LOG:Warning("Failed to configure distance equalizer: %s", err)
+				if sound then
+					soundCache:Return(sound)
+				end
+				LOG:Warning("Failed to play firing sound: %s", err)
+			elseif sound then
+				sound.Ended:Once(function()
+					soundCache:Return(sound)
+				end)
 			end
-			sound:Play()
-			sound.Ended:Once(function()
-				soundCache:Return(sound)
-			end)
 		end
 
 		-- Run other effects

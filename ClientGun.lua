@@ -2,6 +2,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
@@ -495,7 +497,7 @@ function ClientGun:_ClaimReloadIndicator()
 	end
 
 	local dot = self.ui.Dot
-	local indicator = dot:FindFirstChild("Reload")
+	local indicator = self.ui:FindFirstChild("Reload")
 	if not indicator then
 		return
 	end
@@ -513,6 +515,8 @@ function ClientGun:_ClaimReloadIndicator()
 	self._reloadIndicatorDot = dot
 	self._reloadIndicator = indicator
 	self._reloadIndicatorRotation = indicator.Rotation
+	self._reloadIndicatorPosition = indicator.Position
+	self._reloadIndicatorAnchorPoint = indicator.AnchorPoint
 	self._reloadIndicatorConnections = ConnManager:new()
 
 	local function release()
@@ -525,6 +529,50 @@ function ClientGun:_ClaimReloadIndicator()
 	self:_RefreshReloadIndicator()
 end
 
+function ClientGun:_UsesReloadCursor(): boolean
+	return false
+end
+
+function ClientGun:_RestoreReloadCursor()
+	if self._reloadMouseIconEnabled == nil then
+		return
+	end
+
+	-- Camera/aim changes may have hidden the cursor since the reload started.
+	UIS.MouseIconEnabled = self._reloadMouseIconEnabled
+		and not Strafer.IsEnabled
+		and not self.isAiming
+	self._reloadMouseIconEnabled = nil
+end
+
+function ClientGun:_UpdateReloadIndicator()
+	local dot = self._reloadIndicatorDot
+	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
+		return
+	end
+
+	local indicator = self._reloadIndicator
+	local useCursor = self:_UsesReloadCursor()
+	local position
+	if useCursor then
+		if self._reloadMouseIconEnabled == nil then
+			self._reloadMouseIconEnabled = UIS.MouseIconEnabled
+		end
+		UIS.MouseIconEnabled = false
+		position = UIS:GetMouseLocation()
+		if not self.ui.IgnoreGuiInset then
+			local topLeftInset = GuiService:GetGuiInset()
+			position -= topLeftInset
+		end
+	else
+		self:_RestoreReloadCursor()
+		position = dot.AbsolutePosition + dot.AbsoluteSize / 2
+	end
+
+	indicator.Position = UDim2.fromOffset(position.X, position.Y)
+	indicator.Visible = useCursor or dot.Visible
+end
+
 function ClientGun:_RefreshReloadIndicator()
 	local dot = self._reloadIndicatorDot
 	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
@@ -533,19 +581,26 @@ function ClientGun:_RefreshReloadIndicator()
 
 	local indicator = self._reloadIndicator
 	local isReloading = self.isEquipped and self.isReloading == true
-	indicator.Visible = isReloading
 	if isReloading then
 		if not self._reloadIndicatorTween then
 			self._reloadDotTransparency = dot.ImageTransparency
 			dot.ImageTransparency = 1
+			indicator.AnchorPoint = Vector2.new(0.5, 0.5)
 			local tween = TweenService:Create(
 				indicator,
 				TweenInfo.new(1, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
 				{ Rotation = self._reloadIndicatorRotation + 360 }
 			)
 			self._reloadIndicatorTween = tween
+			self._reloadIndicatorConnections:Add(
+				"Render",
+				RunService.RenderStepped:Connect(function()
+					self:_UpdateReloadIndicator()
+				end)
+			)
 			tween:Play()
 		end
+		self:_UpdateReloadIndicator()
 		return
 	end
 
@@ -553,6 +608,8 @@ function ClientGun:_RefreshReloadIndicator()
 end
 
 function ClientGun:_StopReloadIndicator()
+	self._reloadIndicatorConnections:Remove("Render")
+	self:_RestoreReloadCursor()
 	if self._reloadIndicatorTween then
 		self._reloadIndicatorTween:Cancel()
 		self._reloadIndicatorTween:Destroy()
@@ -560,6 +617,8 @@ function ClientGun:_StopReloadIndicator()
 	end
 	self._reloadIndicator.Visible = false
 	self._reloadIndicator.Rotation = self._reloadIndicatorRotation
+	self._reloadIndicator.Position = self._reloadIndicatorPosition
+	self._reloadIndicator.AnchorPoint = self._reloadIndicatorAnchorPoint
 	if self._reloadDotTransparency ~= nil then
 		self._reloadIndicatorDot.ImageTransparency = self._reloadDotTransparency
 		self._reloadDotTransparency = nil
@@ -578,6 +637,8 @@ function ClientGun:_ReleaseReloadIndicator()
 	self._reloadIndicatorConnections = nil
 	self._reloadIndicator = nil
 	self._reloadIndicatorRotation = nil
+	self._reloadIndicatorPosition = nil
+	self._reloadIndicatorAnchorPoint = nil
 	self._reloadIndicatorDot = nil
 	RELOAD_INDICATOR_OWNERS[dot] = nil
 end

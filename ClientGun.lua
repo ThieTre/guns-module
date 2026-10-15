@@ -14,12 +14,15 @@ local MiscUtils = require(Modules.Mega.Utils.Misc)
 local EffectsManager = require(Modules.Mega.Utils.EffectsManager)
 local PlayerUtils = require(Modules.Mega.Utils.Player)
 local InstModify = require(Modules.Mega.Instances.Modify)
+local ConnManager = require(Modules.Mega.Utils.ConnManager)
 
 local LOG = Logging:new("Guns.ClientGun")
 local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local BACKPACK_SETTINGS = require(ReplicatedStorage.Settings.Backpack)
 
 local LocalPlayer = Players.LocalPlayer
+-- Instance ownership is cleared explicitly by _ReleaseReloadIndicator.
+local RELOAD_INDICATOR_OWNERS = {}
 
 -----------------------------------------------------------
 ----------------------- Client Gun ------------------------
@@ -466,9 +469,11 @@ function ClientGun:_ReloadFunctionality()
 
 	self.isReloading = true
 	self.object:SetAttribute("IsReloading", true)
+	self:_RefreshReloadIndicator()
 	local newAmmo = self.remoteFunction:InvokeServer("Reload", true)
 	self.isReloading = false
 	self.object:SetAttribute("IsReloading", false)
+	self:_RefreshReloadIndicator()
 
 	self.canAim = true
 	if newAmmo == self.currentAmmo then
@@ -482,6 +487,99 @@ end
 function ClientGun:_ReloadEffects()
 	-- Animations
 	self.animManager["Reload"]:Play(1, 1, self.reloadAnimSpeed)
+end
+
+function ClientGun:_ClaimReloadIndicator()
+	if not self.isEquipped or self.childOf or (self.IsAbility and self:IsAbility()) then
+		return
+	end
+
+	local dot = self.ui.Dot
+	local indicator = dot:FindFirstChild("Reload")
+	if not indicator then
+		return
+	end
+
+	local previousOwner = RELOAD_INDICATOR_OWNERS[dot]
+	if previousOwner == self then
+		self:_RefreshReloadIndicator()
+		return
+	end
+	if previousOwner then
+		previousOwner:_ReleaseReloadIndicator()
+	end
+
+	RELOAD_INDICATOR_OWNERS[dot] = self
+	self._reloadIndicatorDot = dot
+	self._reloadIndicator = indicator
+	self._reloadIndicatorRotation = indicator.Rotation
+	self._reloadIndicatorConnections = ConnManager:new()
+
+	local function release()
+		self:_ReleaseReloadIndicator()
+	end
+	self._reloadIndicatorConnections:Add("Weapon", self.object.Destroying:Connect(release))
+	self._reloadIndicatorConnections:Add("Dot", dot.Destroying:Connect(release))
+	self._reloadIndicatorConnections:Add("Indicator", indicator.Destroying:Connect(release))
+	self._reloadIndicatorConnections:Add("Death", self.humanoid.Died:Connect(release))
+	self:_RefreshReloadIndicator()
+end
+
+function ClientGun:_RefreshReloadIndicator()
+	local dot = self._reloadIndicatorDot
+	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
+		return
+	end
+
+	local indicator = self._reloadIndicator
+	local isReloading = self.isEquipped and self.isReloading == true
+	indicator.Visible = isReloading
+	if isReloading then
+		if not self._reloadIndicatorTween then
+			self._reloadDotTransparency = dot.ImageTransparency
+			dot.ImageTransparency = 1
+			local tween = TweenService:Create(
+				indicator,
+				TweenInfo.new(1, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+				{ Rotation = self._reloadIndicatorRotation + 360 }
+			)
+			self._reloadIndicatorTween = tween
+			tween:Play()
+		end
+		return
+	end
+
+	self:_StopReloadIndicator()
+end
+
+function ClientGun:_StopReloadIndicator()
+	if self._reloadIndicatorTween then
+		self._reloadIndicatorTween:Cancel()
+		self._reloadIndicatorTween:Destroy()
+		self._reloadIndicatorTween = nil
+	end
+	self._reloadIndicator.Visible = false
+	self._reloadIndicator.Rotation = self._reloadIndicatorRotation
+	if self._reloadDotTransparency ~= nil then
+		self._reloadIndicatorDot.ImageTransparency = self._reloadDotTransparency
+		self._reloadDotTransparency = nil
+	end
+end
+
+function ClientGun:_ReleaseReloadIndicator()
+	local dot = self._reloadIndicatorDot
+	-- A delayed reload or unequip must not change the replacement owner's UI.
+	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
+		return
+	end
+
+	self:_StopReloadIndicator()
+	self._reloadIndicatorConnections:RemoveAll()
+	self._reloadIndicatorConnections = nil
+	self._reloadIndicator = nil
+	self._reloadIndicatorRotation = nil
+	self._reloadIndicatorDot = nil
+	RELOAD_INDICATOR_OWNERS[dot] = nil
 end
 
 -- =============== Aiming ==============
@@ -713,6 +811,7 @@ function ClientGun:Equip()
 
 	-- Equip
 	self.isEquipped = self.object.Parent ~= self.player.Backpack
+	self:_ClaimReloadIndicator()
 	if self.isEquipped then
 		self.humanoid.WalkSpeed *= self.settings.Gun.WalkspeedAdj
 		self:_Hold()
@@ -722,6 +821,7 @@ function ClientGun:Equip()
 end
 
 function ClientGun:Unequip()
+	self:_ReleaseReloadIndicator()
 	if not self.isEquipped then
 		return
 	end

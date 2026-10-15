@@ -23,8 +23,8 @@ local SETTINGS = require(ReplicatedStorage.Settings.Guns)
 local BACKPACK_SETTINGS = require(ReplicatedStorage.Settings.Backpack)
 
 local LocalPlayer = Players.LocalPlayer
--- Instance ownership is cleared explicitly by _ReleaseReloadIndicator.
-local RELOAD_INDICATOR_OWNERS = {}
+-- Instance ownership is cleared explicitly by _ReleaseCrosshair.
+local CROSSHAIR_OWNERS = {}
 
 -----------------------------------------------------------
 ----------------------- Client Gun ------------------------
@@ -491,116 +491,156 @@ function ClientGun:_ReloadEffects()
 	self.animManager["Reload"]:Play(1, 1, self.reloadAnimSpeed)
 end
 
-function ClientGun:_ClaimReloadIndicator()
+-- =============== Crosshair ==============
+
+function ClientGun:_ClaimCrosshair()
 	if not self.isEquipped or self.childOf or (self.IsAbility and self:IsAbility()) then
 		return
 	end
 
 	local dot = self.ui.Dot
-	local indicator = self.ui:FindFirstChild("Reload")
-	if not indicator then
-		return
-	end
-
-	local previousOwner = RELOAD_INDICATOR_OWNERS[dot]
+	local previousOwner = CROSSHAIR_OWNERS[dot]
 	if previousOwner == self then
+		self:_RefreshCrosshair()
 		self:_RefreshReloadIndicator()
 		return
 	end
 	if previousOwner then
-		previousOwner:_ReleaseReloadIndicator()
+		previousOwner:_ReleaseCrosshair()
 	end
 
-	RELOAD_INDICATOR_OWNERS[dot] = self
-	self._reloadIndicatorDot = dot
+	CROSSHAIR_OWNERS[dot] = self
+	self._crosshairDot = dot
+	self._crosshairPosition = dot.Position
+	self._crosshairAnchorPoint = dot.AnchorPoint
+	-- Strafer owns cursor hiding while enabled; its disabled state shows it again.
+	self._crosshairMouseIconEnabled = UIS.MouseIconEnabled or Strafer.IsEnabled == true
+	self._crosshairConnections = ConnManager:new()
+	local indicator = dot:FindFirstChild("Reload")
 	self._reloadIndicator = indicator
-	self._reloadIndicatorRotation = indicator.Rotation
-	self._reloadIndicatorPosition = indicator.Position
-	self._reloadIndicatorAnchorPoint = indicator.AnchorPoint
-	self._reloadIndicatorConnections = ConnManager:new()
 
 	local function release()
-		self:_ReleaseReloadIndicator()
+		self:_ReleaseCrosshair()
 	end
-	self._reloadIndicatorConnections:Add("Weapon", self.object.Destroying:Connect(release))
-	self._reloadIndicatorConnections:Add("Dot", dot.Destroying:Connect(release))
-	self._reloadIndicatorConnections:Add("Indicator", indicator.Destroying:Connect(release))
-	self._reloadIndicatorConnections:Add("Death", self.humanoid.Died:Connect(release))
+	self._crosshairConnections:Add("Weapon", self.object.Destroying:Connect(release))
+	self._crosshairConnections:Add("Dot", dot.Destroying:Connect(release))
+	self._crosshairConnections:Add("Death", self.humanoid.Died:Connect(release))
+	if indicator then
+		self._reloadIndicatorRotation = indicator.Rotation
+		self._crosshairConnections:Add("Indicator", indicator.Destroying:Connect(function()
+			if self._reloadIndicator ~= indicator then
+				return
+			end
+			self:_StopReloadIndicator()
+			self._reloadIndicator = nil
+			self._reloadIndicatorRotation = nil
+		end))
+	end
+	self:_RefreshCrosshair()
 	self:_RefreshReloadIndicator()
 end
 
-function ClientGun:_UsesReloadCursor(): boolean
+function ClientGun:_UsesMouseCrosshair(): boolean
 	return false
 end
 
-function ClientGun:_RestoreReloadCursor()
-	if self._reloadMouseIconEnabled == nil then
-		return
-	end
-
-	-- Camera/aim changes may have hidden the cursor since the reload started.
-	UIS.MouseIconEnabled = self._reloadMouseIconEnabled
-		and not Strafer.IsEnabled
-		and not self.isAiming
-	self._reloadMouseIconEnabled = nil
+function ClientGun:_ShouldShowCrosshair(): boolean
+	return not (self.isAiming and self.settings.Gun.Scope)
 end
 
-function ClientGun:_UpdateReloadIndicator()
-	local dot = self._reloadIndicatorDot
-	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
+function ClientGun:_UpdateCrosshairPosition()
+	local dot = self._crosshairDot
+	if not dot or CROSSHAIR_OWNERS[dot] ~= self then
 		return
 	end
 
-	local indicator = self._reloadIndicator
-	local useCursor = self:_UsesReloadCursor()
-	local position
-	if useCursor then
-		if self._reloadMouseIconEnabled == nil then
-			self._reloadMouseIconEnabled = UIS.MouseIconEnabled
-		end
-		UIS.MouseIconEnabled = false
-		position = UIS:GetMouseLocation()
-		if not self.ui.IgnoreGuiInset then
-			local topLeftInset = GuiService:GetGuiInset()
-			position -= topLeftInset
-		end
-	else
-		self:_RestoreReloadCursor()
-		position = dot.AbsolutePosition + dot.AbsoluteSize / 2
+	local position = UIS:GetMouseLocation()
+	if not self.ui.IgnoreGuiInset then
+		local topLeftInset = GuiService:GetGuiInset()
+		position -= topLeftInset
+	end
+	dot.Position = UDim2.fromOffset(position.X, position.Y)
+	UIS.MouseIconEnabled = false
+end
+
+function ClientGun:_RefreshCrosshair()
+	local dot = self._crosshairDot
+	if not dot or CROSSHAIR_OWNERS[dot] ~= self then
+		return
 	end
 
-	indicator.Position = UDim2.fromOffset(position.X, position.Y)
-	indicator.Visible = useCursor or dot.Visible
+	local isPilotingDrone = self._controlledDroneCameraOverrideActive == true
+		or self:IsPilotingControlledDrone()
+	local useMouse = not isPilotingDrone and self:_UsesMouseCrosshair()
+	dot.Visible = not isPilotingDrone and self:_ShouldShowCrosshair()
+	if useMouse then
+		dot.AnchorPoint = Vector2.new(0.5, 0.5)
+		self:_UpdateCrosshairPosition()
+		if not self._crosshairFollowsMouse then
+			self._crosshairConnections:Add(
+				"Render",
+				RunService.RenderStepped:Connect(function()
+					self:_UpdateCrosshairPosition()
+				end)
+			)
+			self._crosshairFollowsMouse = true
+		end
+	else
+		self._crosshairConnections:Remove("Render")
+		self._crosshairFollowsMouse = false
+		dot.Position = self._crosshairPosition
+		dot.AnchorPoint = self._crosshairAnchorPoint
+		UIS.MouseIconEnabled = isPilotingDrone
+			and self._crosshairMouseIconEnabled
+			and not Strafer.IsEnabled
+	end
+end
+
+function ClientGun:_ReleaseCrosshair()
+	local dot = self._crosshairDot
+	-- A delayed reload or unequip must not change the replacement owner's UI.
+	if not dot or CROSSHAIR_OWNERS[dot] ~= self then
+		return
+	end
+
+	self:_StopReloadIndicator()
+	self._crosshairConnections:RemoveAll()
+	dot.Visible = false
+	dot.Position = self._crosshairPosition
+	dot.AnchorPoint = self._crosshairAnchorPoint
+	UIS.MouseIconEnabled = self._crosshairMouseIconEnabled and not Strafer.IsEnabled
+	CROSSHAIR_OWNERS[dot] = nil
+	self._crosshairConnections = nil
+	self._crosshairDot = nil
+	self._crosshairPosition = nil
+	self._crosshairAnchorPoint = nil
+	self._crosshairMouseIconEnabled = nil
+	self._crosshairFollowsMouse = nil
+	self._reloadIndicator = nil
+	self._reloadIndicatorRotation = nil
 end
 
 function ClientGun:_RefreshReloadIndicator()
-	local dot = self._reloadIndicatorDot
-	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
+	local dot = self._crosshairDot
+	if not dot or CROSSHAIR_OWNERS[dot] ~= self or not self._reloadIndicator then
 		return
 	end
 
 	local indicator = self._reloadIndicator
 	local isReloading = self.isEquipped and self.isReloading == true
+	indicator.Visible = isReloading
 	if isReloading then
 		if not self._reloadIndicatorTween then
 			self._reloadDotTransparency = dot.ImageTransparency
 			dot.ImageTransparency = 1
-			indicator.AnchorPoint = Vector2.new(0.5, 0.5)
 			local tween = TweenService:Create(
 				indicator,
 				TweenInfo.new(1, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
 				{ Rotation = self._reloadIndicatorRotation + 360 }
 			)
 			self._reloadIndicatorTween = tween
-			self._reloadIndicatorConnections:Add(
-				"Render",
-				RunService.RenderStepped:Connect(function()
-					self:_UpdateReloadIndicator()
-				end)
-			)
 			tween:Play()
 		end
-		self:_UpdateReloadIndicator()
 		return
 	end
 
@@ -608,39 +648,19 @@ function ClientGun:_RefreshReloadIndicator()
 end
 
 function ClientGun:_StopReloadIndicator()
-	self._reloadIndicatorConnections:Remove("Render")
-	self:_RestoreReloadCursor()
 	if self._reloadIndicatorTween then
 		self._reloadIndicatorTween:Cancel()
 		self._reloadIndicatorTween:Destroy()
 		self._reloadIndicatorTween = nil
 	end
-	self._reloadIndicator.Visible = false
-	self._reloadIndicator.Rotation = self._reloadIndicatorRotation
-	self._reloadIndicator.Position = self._reloadIndicatorPosition
-	self._reloadIndicator.AnchorPoint = self._reloadIndicatorAnchorPoint
+	if self._reloadIndicator then
+		self._reloadIndicator.Visible = false
+		self._reloadIndicator.Rotation = self._reloadIndicatorRotation
+	end
 	if self._reloadDotTransparency ~= nil then
-		self._reloadIndicatorDot.ImageTransparency = self._reloadDotTransparency
+		self._crosshairDot.ImageTransparency = self._reloadDotTransparency
 		self._reloadDotTransparency = nil
 	end
-end
-
-function ClientGun:_ReleaseReloadIndicator()
-	local dot = self._reloadIndicatorDot
-	-- A delayed reload or unequip must not change the replacement owner's UI.
-	if not dot or RELOAD_INDICATOR_OWNERS[dot] ~= self then
-		return
-	end
-
-	self:_StopReloadIndicator()
-	self._reloadIndicatorConnections:RemoveAll()
-	self._reloadIndicatorConnections = nil
-	self._reloadIndicator = nil
-	self._reloadIndicatorRotation = nil
-	self._reloadIndicatorPosition = nil
-	self._reloadIndicatorAnchorPoint = nil
-	self._reloadIndicatorDot = nil
-	RELOAD_INDICATOR_OWNERS[dot] = nil
 end
 
 -- =============== Aiming ==============
@@ -692,7 +712,6 @@ function ClientGun:ToggleAim(enabled: boolean)
 		Strafer:SetActiveCameraSettings("ZoomedShoulder")
 		self.effectsManager:Run("ZoomIn")
 		if scopeSettings then
-			self.ui.Dot.Visible = false
 			self:_UpdateScopeUI(scopeSettings, true)
 			local gunLength = (
 				self.settings.Caster.FirePoint.WorldCFrame.Position
@@ -714,11 +733,11 @@ function ClientGun:ToggleAim(enabled: boolean)
 		-- Return camera back to normal
 		if scopeSettings then
 			self:_UpdateScopeUI(scopeSettings, false)
-			self.ui.Dot.Visible = true
 		end
 		self.humanoid.WalkSpeed /= self.settings.Gun.AimWalkSpeedAdj
 	end
 
+	self:_RefreshCrosshair()
 	local tween = TweenService:Create(
 		workspace.CurrentCamera,
 		tweenInfo,
@@ -755,6 +774,7 @@ function ClientGun:_OnControlledDroneControlAcquired(_cast: {})
 	if self._OnControlledDroneKeybindsChanged then
 		self:_OnControlledDroneKeybindsChanged(true)
 	end
+	self:_RefreshCrosshair()
 end
 
 function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: boolean)
@@ -776,6 +796,7 @@ function ClientGun:_OnControlledDroneControlReleased(_cast: {}, isTransfer: bool
 	end
 
 	self:_ApplyEquippedStraferState()
+	self:_RefreshCrosshair()
 end
 
 function ClientGun:_UpdateScopeUI(scopeSettings: {}, enabled: boolean)
@@ -867,12 +888,11 @@ function ClientGun:Equip()
 	self:_RequestTorsoLock(false)
 
 	-- Ui
-	self.ui.Dot.Visible = true
 	self:_RefreshHotbarState()
 
 	-- Equip
 	self.isEquipped = self.object.Parent ~= self.player.Backpack
-	self:_ClaimReloadIndicator()
+	self:_ClaimCrosshair()
 	if self.isEquipped then
 		self.humanoid.WalkSpeed *= self.settings.Gun.WalkspeedAdj
 		self:_Hold()
@@ -882,14 +902,13 @@ function ClientGun:Equip()
 end
 
 function ClientGun:Unequip()
-	self:_ReleaseReloadIndicator()
+	self:_ReleaseCrosshair()
 	if not self.isEquipped then
 		return
 	end
 	self:ResetFireRateRamp()
 	self:ToggleAim(false)
 	Strafer:SetEnabled(false)
-	self.ui.Dot.Visible = false
 	self.humanoid.WalkSpeed /= self.settings.Gun.WalkspeedAdj
 	self.animManager:StopAll()
 	self.isEquipped = false

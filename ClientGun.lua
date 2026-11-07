@@ -4,6 +4,8 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local GuiService = game:GetService("GuiService")
+local StarterGui = game:GetService("StarterGui")
+local TextChatService = game:GetService("TextChatService")
 local Modules = ReplicatedStorage.Modules
 
 local Logging = require(Modules.Mega.Logging)
@@ -25,6 +27,8 @@ local BACKPACK_SETTINGS = require(ReplicatedStorage.Settings.Backpack)
 local LocalPlayer = Players.LocalPlayer
 -- Instance ownership is cleared explicitly by _ReleaseCrosshair.
 local CROSSHAIR_OWNERS = {}
+local REMOTE_SETUPS = {}
+local REMOTE_GENERATIONS = setmetatable({}, { __mode = "k" })
 
 -----------------------------------------------------------
 ----------------------- Client Gun ------------------------
@@ -493,6 +497,66 @@ end
 
 -- =============== Crosshair ==============
 
+local CHAT_VISIBILITY_POLL_INTERVAL = 0.25
+local chatWindowConfig = TextChatService.ChatWindowConfiguration
+local chatInputConfig = TextChatService.ChatInputBarConfiguration
+local isChatActive = true
+
+local function isPointerInBounds(pointer: Vector2, position: Vector2, size: Vector2): boolean
+	return pointer.X >= position.X
+		and pointer.Y >= position.Y
+		and pointer.X < position.X + size.X
+		and pointer.Y < position.Y + size.Y
+end
+
+local function shouldShowCoreUICursor(pointer: Vector2): boolean
+	if not UIS.MouseEnabled or UIS.PreferredInput ~= Enum.PreferredInput.KeyboardAndMouse then
+		return false
+	end
+	if GuiService.MenuIsOpen or chatInputConfig.IsFocused then
+		return true
+	end
+	if UIS.MouseBehavior ~= Enum.MouseBehavior.Default then
+		return false
+	end
+
+	local camera = workspace.CurrentCamera
+	if not camera or not isPointerInBounds(pointer, Vector2.zero, camera.ViewportSize) then
+		return false
+	end
+	local topLeftInset = GuiService:GetGuiInset()
+	-- TopbarInset describes free space; its bottom edge also covers Roblox's buttons.
+	if pointer.Y < math.max(topLeftInset.Y, GuiService.TopbarInset.Max.Y) then
+		return true
+	end
+	if not isChatActive or not StarterGui:GetCoreGuiEnabled(Enum.CoreGuiType.Chat) then
+		return false
+	end
+	if
+		chatWindowConfig.Enabled
+		and isPointerInBounds(pointer, chatWindowConfig.AbsolutePosition, chatWindowConfig.AbsoluteSize)
+	then
+		return true
+	end
+	return chatInputConfig.Enabled
+		and isPointerInBounds(pointer, chatInputConfig.AbsolutePosition, chatInputConfig.AbsoluteSize)
+end
+
+-- GetCore may yield; keep visibility sampling outside the crosshair render callback.
+if RunService:IsClient() then
+	task.spawn(function()
+		while true do
+			if UIS.MouseEnabled then
+				local success, res = pcall(StarterGui.GetCore, StarterGui, "ChatActive")
+				if success then
+					isChatActive = res ~= false
+				end
+			end
+			task.wait(CHAT_VISIBILITY_POLL_INTERVAL)
+		end
+	end)
+end
+
 function ClientGun:_ClaimCrosshair()
 	if not self.isEquipped or self.childOf or (self.IsAbility and self:IsAbility()) then
 		return
@@ -525,6 +589,9 @@ function ClientGun:_ClaimCrosshair()
 	self._crosshairConnections:Add("Weapon", self.object.Destroying:Connect(release))
 	self._crosshairConnections:Add("Dot", dot.Destroying:Connect(release))
 	self._crosshairConnections:Add("Death", self.humanoid.Died:Connect(release))
+	self._crosshairConnections:Add("Strafer", Strafer.StateChanged:Connect(function()
+		self:_RefreshCrosshair()
+	end))
 	if indicator then
 		self._reloadIndicatorRotation = indicator.Rotation
 		self._crosshairConnections:Add("Indicator", indicator.Destroying:Connect(function()
@@ -548,19 +615,23 @@ function ClientGun:_ShouldShowCrosshair(): boolean
 	return not (self.isAiming and self.settings.Gun.Scope)
 end
 
-function ClientGun:_UpdateCrosshairPosition()
+function ClientGun:_UpdateCrosshairPosition(position: Vector2?)
 	local dot = self._crosshairDot
-	if not dot or CROSSHAIR_OWNERS[dot] ~= self then
+	if
+		not dot
+		or CROSSHAIR_OWNERS[dot] ~= self
+		or Strafer.IsPauseRequested
+		or Strafer.IsPaused
+	then
 		return
 	end
 
-	local position = UIS:GetMouseLocation()
+	position = position or UIS:GetMouseLocation()
 	if not self.ui.IgnoreGuiInset then
 		local topLeftInset = GuiService:GetGuiInset()
 		position -= topLeftInset
 	end
 	dot.Position = UDim2.fromOffset(position.X, position.Y)
-	UIS.MouseIconEnabled = false
 end
 
 function ClientGun:_RefreshCrosshair()
@@ -571,28 +642,46 @@ function ClientGun:_RefreshCrosshair()
 
 	local isPilotingDrone = self._controlledDroneCameraOverrideActive == true
 		or self:IsPilotingControlledDrone()
-	local useMouse = not isPilotingDrone and self:_UsesMouseCrosshair()
-	dot.Visible = not isPilotingDrone and self:_ShouldShowCrosshair()
+	local isPaused = Strafer.IsPauseRequested or Strafer.IsPaused
+	local isStraferActive = Strafer.IsEnabled and not isPaused
+	local useMouse = not isPilotingDrone and not isPaused and self:_UsesMouseCrosshair()
+	local mousePosition = if useMouse then UIS:GetMouseLocation() else nil
+	local showCoreUICursor = mousePosition ~= nil
+		and not Strafer.IsEnabled
+		and shouldShowCoreUICursor(mousePosition)
+	dot.Visible = not isPilotingDrone
+		and not isPaused
+		and not showCoreUICursor
+		and (isStraferActive or useMouse)
+		and self:_ShouldShowCrosshair()
 	if useMouse then
-		dot.AnchorPoint = Vector2.new(0.5, 0.5)
-		self:_UpdateCrosshairPosition()
 		if not self._crosshairFollowsMouse then
+			dot.AnchorPoint = Vector2.new(0.5, 0.5)
 			self._crosshairConnections:Add(
 				"Render",
 				RunService.RenderStepped:Connect(function()
-					self:_UpdateCrosshairPosition()
+					self:_RefreshCrosshair()
 				end)
 			)
 			self._crosshairFollowsMouse = true
+		end
+		if not showCoreUICursor then
+			self:_UpdateCrosshairPosition(mousePosition)
 		end
 	else
 		self._crosshairConnections:Remove("Render")
 		self._crosshairFollowsMouse = false
 		dot.Position = self._crosshairPosition
 		dot.AnchorPoint = self._crosshairAnchorPoint
-		UIS.MouseIconEnabled = isPilotingDrone
-			and self._crosshairMouseIconEnabled
-			and not Strafer.IsEnabled
+	end
+	if isPaused then
+		UIS.MouseIconEnabled = true
+	elseif isPilotingDrone then
+		UIS.MouseIconEnabled = self._crosshairMouseIconEnabled and not Strafer.IsEnabled
+	elseif useMouse then
+		UIS.MouseIconEnabled = showCoreUICursor
+	else
+		UIS.MouseIconEnabled = not isStraferActive and not useMouse
 	end
 end
 
@@ -608,7 +697,9 @@ function ClientGun:_ReleaseCrosshair()
 	dot.Visible = false
 	dot.Position = self._crosshairPosition
 	dot.AnchorPoint = self._crosshairAnchorPoint
-	UIS.MouseIconEnabled = self._crosshairMouseIconEnabled and not Strafer.IsEnabled
+	UIS.MouseIconEnabled = Strafer.IsPauseRequested
+		or Strafer.IsPaused
+		or (self._crosshairMouseIconEnabled and not Strafer.IsEnabled)
 	CROSSHAIR_OWNERS[dot] = nil
 	self._crosshairConnections = nil
 	self._crosshairDot = nil
@@ -974,33 +1065,163 @@ function ClientGun._setupClient(gun: Tool)
 	ClientGun._setupWelding(gun)
 end
 
-function ClientGun._setupRemotes(gun: Tool | Model)
-	local remoteEvent: RemoteEvent = gun:WaitForChild("RemoteEvent")
-	local handle = gun:WaitForChild("Handle", 10)
-	if not handle then
+function ClientGun._cleanupRemotes(gun: Tool | Model)
+	REMOTE_GENERATIONS[gun] = (REMOTE_GENERATIONS[gun] or 0) + 1
+	local state = REMOTE_SETUPS[gun]
+	if not state then
 		return
 	end
-	local gunSettings = require(gun.Settings)
+	REMOTE_SETUPS[gun] = nil
+	state.connections:RemoveAll()
+	if state.effectsManager then
+		state.effectsManager:Destroy()
+	end
+	for thread in state.collector.Threads do
+		if coroutine.status(thread) ~= "dead" and thread ~= coroutine.running() then
+			task.cancel(thread)
+		end
+	end
+	for _, tween in state.collector.Tweens do
+		tween:Cancel()
+	end
+	for effect in state.effects do
+		if effect:IsA("Sound") then
+			effect:Stop()
+		elseif effect:IsA("ParticleEmitter") then
+			EffectsManager.Emitter.EmitDisable(effect)
+		elseif effect:IsA("Light") then
+			EffectsManager.Light.StopFlashing(effect)
+		end
+	end
+	local cache = state.soundCache
+	if cache then
+		for _, sound in cache.open do
+			sound:Destroy()
+		end
+		for _, sound in cache.inUse do
+			sound:Destroy()
+		end
+		cache.template:Destroy()
+	end
+end
+
+-- Returns true once ready. Repeated calls reuse the listener and cache;
+-- missing streamed children return false without yielding for those children.
+function ClientGun._setupRemotes(gun: Tool | Model): boolean
+	if not gun:IsDescendantOf(game) then
+		return false
+	end
+	local state = REMOTE_SETUPS[gun]
+	if state then
+		if state.ready then
+			return true
+		elseif state.initializing then
+			return false
+		end
+	else
+		state = { connections = ConnManager:new(), effects = {} }
+		state.collector = {
+			Threads = {},
+			Tweens = {},
+			OnError = function(err)
+				LOG:Warning("Remote firing effect failed: %s", tostring(err))
+			end,
+			AddEffect = function(_, effect)
+				state.effects[effect] = true
+			end,
+		}
+		REMOTE_SETUPS[gun] = state
+		local function descendantsChanged(instance)
+			if REMOTE_SETUPS[gun] ~= state then
+				return
+			end
+			-- The cache owns its sound clones, including their descendants.
+			local ancestor = instance
+			while ancestor and ancestor ~= gun do
+				if ancestor:GetAttribute("_RemoteFireCache") then
+					return
+				end
+				ancestor = ancestor.Parent
+			end
+			if not (instance:IsA("BasePart") or instance:IsA("Attachment")
+				or instance:IsA("Sound") or instance:IsA("ParticleEmitter")
+				or instance:IsA("Light") or instance:IsA("RemoteEvent")
+				or instance.Name == "Settings" or instance:IsA("EqualizerSoundEffect")
+				or instance:IsA("Animator")) then
+				return
+			end
+			ClientGun._cleanupRemotes(gun)
+			local generation = REMOTE_GENERATIONS[gun]
+			task.defer(function()
+				if REMOTE_GENERATIONS[gun] == generation then
+					ClientGun._setupRemotes(gun)
+				end
+			end)
+		end
+		state.connections:Add("Added", gun.DescendantAdded:Connect(descendantsChanged))
+		state.connections:Add("Removing", gun.DescendantRemoving:Connect(descendantsChanged))
+		state.connections:Add("Ancestry", gun.AncestryChanged:Connect(function()
+			if REMOTE_SETUPS[gun] == state and not gun:IsDescendantOf(game) then
+				ClientGun._cleanupRemotes(gun)
+			end
+		end))
+		state.connections:Add("Destroying", gun.Destroying:Connect(function()
+			if REMOTE_SETUPS[gun] == state then
+				ClientGun._cleanupRemotes(gun)
+			end
+		end))
+	end
+	local remoteEvent = gun:FindFirstChild("RemoteEvent")
+	local handle = gun:FindFirstChild("Handle")
+	local settingsModule = gun:FindFirstChild("Settings")
+	local firePoint = handle and handle:FindFirstChild("FirePoint")
+	if not remoteEvent or not handle or not settingsModule or not firePoint then
+		return false
+	end
+	local fireTemplate = handle:FindFirstChild("Fire")
+	if fireTemplate and not fireTemplate:FindFirstChild("EqualizerSoundEffect") then
+		return false
+	end
+	state.initializing = true
+	local success, res = pcall(require, settingsModule)
+	if REMOTE_SETUPS[gun] ~= state then
+		return false
+	end
+	if not success then
+		ClientGun._cleanupRemotes(gun)
+		error(res)
+	end
+	local gunSettings = res
 	local nextBarrelCount = 1
 	local barrelCount = gunSettings.Gun.BarrelCount
 	local inheritParentSpeed = gunSettings.Caster.InheritParentSpeed
-	local bulletsPerShot = gunSettings.Gun.BulletsPerShot
 	local projecileSpeed = gunSettings.Caster.ProjectileSpeed
 
-	local effectsManager = EffectsManager:new(gun:GetDescendants())
+	-- Register ownership before animation marker lookups can yield.
+	local effectsManager = EffectsManager:new()
+	state.effectsManager = effectsManager
+	effectsManager:new(gun:GetDescendants())
+	if REMOTE_SETUPS[gun] ~= state then
+		return false
+	end
 	effectsManager:UpdateGroup("Fire", { "Emitter" })
 
 	-- Setup sound cache
 	local soundCache = nil
-	local fireTemplate = gun:WaitForChild("Handle"):FindFirstChild("Fire")
 	if fireTemplate then
-		fireTemplate:WaitForChild("EqualizerSoundEffect")
-		soundCache = ICache:new(fireTemplate, { parent = handle })
+		-- InstanceCache takes ownership of its template; preserve the authored sound.
+		local cacheTemplate = fireTemplate:Clone()
+		cacheTemplate:SetAttribute("_RemoteFireCache", true)
+		soundCache = ICache:new(cacheTemplate, { parent = handle })
+		state.soundCache = soundCache
 	end
 
-	local emitterAttach = handle.FirePoint:WaitForChild("EmitterAttachment", 3)
-	local emitter: ParticleEmitter = emitterAttach and emitterAttach.Emitter
-	remoteEvent.OnClientEvent:Connect(function(castDistance)
+	local emitterAttach = firePoint:FindFirstChild("EmitterAttachment")
+	local emitter: ParticleEmitter = emitterAttach and emitterAttach:FindFirstChild("Emitter")
+	state.connections:Add("Fire", remoteEvent.OnClientEvent:Connect(function(castDistance)
+		if REMOTE_SETUPS[gun] ~= state then
+			return
+		end
 		if typeof(castDistance) == "table" then
 			return
 		end
@@ -1025,7 +1246,7 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 				if not hrp then
 					return
 				end
-				local distance = (handle.FirePoint.WorldPosition - hrp.Position).Magnitude
+				local distance = (firePoint.WorldPosition - hrp.Position).Magnitude
 				if distance > fireTemplate.RollOffMaxDistance then
 					return
 				end
@@ -1054,23 +1275,35 @@ function ClientGun._setupRemotes(gun: Tool | Model)
 				end
 				LOG:Warning("Failed to play firing sound: %s", err)
 			elseif sound then
-				sound.Ended:Once(function()
-					soundCache:Return(sound)
-				end)
+				state.connections:Add(sound, sound.Ended:Once(function()
+					state.connections:Remove(sound)
+					if REMOTE_SETUPS[gun] == state then
+						soundCache:Return(sound)
+					end
+				end))
 			end
 		end
 
 		-- Run other effects
-		effectsManager:RunAll("Fire")
+		for i = #state.collector.Tweens, 1, -1 do
+			local playbackState = state.collector.Tweens[i].PlaybackState
+			if playbackState == Enum.PlaybackState.Completed or playbackState == Enum.PlaybackState.Cancelled then
+				table.remove(state.collector.Tweens, i)
+			end
+		end
+		effectsManager:RunAll("Fire", state.collector)
 
 		if barrelCount then
-			effectsManager:RunAll("FireBarrel" .. nextBarrelCount)
+			effectsManager:RunAll("FireBarrel" .. nextBarrelCount, state.collector)
 			nextBarrelCount += 1
 			if nextBarrelCount > barrelCount then
 				nextBarrelCount = 1
 			end
 		end
-	end)
+	end))
+	state.initializing = false
+	state.ready = true
+	return true
 end
 
 function ClientGun._setupWelding(gun: Tool)

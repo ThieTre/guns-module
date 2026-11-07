@@ -400,9 +400,7 @@ function ServerGun:_CanDirectFire(): boolean
 end
 
 function ServerGun:_BroadcastObserverFire(castDistance: number?)
-	for _, player in Players:GetPlayers() do
-		self.remoteEvent:FireClient(player, castDistance)
-	end
+	self.remoteEvent:FireAllClients(castDistance)
 end
 
 function ServerGun:DirectFireAt(

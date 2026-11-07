@@ -26,8 +26,11 @@ end
 -- ============== Owning Player =============
 
 local MiscUtils = require(Modules.Mega.Utils.Misc)
+local InputUtils = require(Modules.Mega.Interface.Input)
 local Logging = require(Modules.Mega.Logging)
 local PlayerSettings = require(Modules.Mega.Data.PlayerSettings)
+local CombatMarkers = require(Modules.CombatMarkers)
+local autoSpotTracker = require(Modules.CombatMarkers.AutoSpotTracker):new()
 local AMS = require(Modules.AMS.Controller)
 local Strafer = require(Modules.Strafer)
 local ConnManager = require(Modules.Mega.Utils.ConnManager)
@@ -252,7 +255,18 @@ local function getControlledDroneAimPosition(): Vector3
 	return camera.CFrame.Position + camera.CFrame.LookVector * maxDistance
 end
 
+local autoAimInstance
 local autoAimPos: Vector3? = nil
+local function recordAutoShot(hit)
+	if not isMobile or not PlayerSettings:Lookup("AutoSpotEnabled", true)
+		or not PlayerSettings:Lookup("AutoShoot", true) then
+		autoSpotTracker:Reset()
+		return
+	end
+	local target = autoSpotTracker:RecordShot(hit)
+	if target then CombatMarkers.AutoSpotRequested:Fire(target) end
+end
+
 local function onHeartbeat()
 	local isPilotingControlledDrone = gun:IsPilotingControlledDrone()
 	local isProjectileLimitBlocked = gun:IsProjectileLaunchBlockedByActiveLimit()
@@ -264,11 +278,13 @@ local function onHeartbeat()
 	end
 
 	if isPilotingControlledDrone then
+		autoSpotTracker:Reset()
 		setMouseDown(false)
 		return
 	end
 
 	if not mouseDown or isFiring or isProjectileLimitBlocked then
+		if isProjectileLimitBlocked or (not mouseDown and not isFiring) then autoSpotTracker:Reset() end
 		if not isFiring and (not mouseDown or isProjectileLimitBlocked) then
 			gun:ResetFireRateRamp()
 		end
@@ -290,7 +306,9 @@ local function onHeartbeat()
 		pos = mouse.Hit.Position
 	end
 
+	local autoFireHit = autoAimInstance
 	local ok, firedOrErr = pcall(gun.Fire, gun, pos)
+	if ok and firedOrErr then recordAutoShot(autoFireHit) else autoSpotTracker:Reset() end
 	if not ok then
 		LOG:Error(
 			"Gun failed to fire for client %s: %s",
@@ -314,8 +332,10 @@ local function onHeartbeat()
 				followPos = getControlledDroneAimPosition()
 			end
 			if not gun:Fire(followPos, { ignoreFireCheck = true }) then
+				autoSpotTracker:Reset()
 				break
 			end
+			recordAutoShot(autoFireHit)
 		end
 
 		local burstCooldown = gun:_GetFireCooldownDuration()
@@ -384,13 +404,13 @@ local function setupDesktop()
 	connections:Add(
 		"inputBegan",
 		UIS.InputBegan:Connect(function(input, gp)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 and InputUtils.isAltDown() then return end
 			local key = input.KeyCode
 			local allowConsoleInput = (
 				key == Enum.KeyCode.ButtonR2
 				or key == Enum.KeyCode.ButtonL2
 				or key == Enum.KeyCode.ButtonX
 				or key == Enum.KeyCode.ButtonB
-				or key == Enum.KeyCode.ButtonR3
 			)
 			if gp and not allowConsoleInput then
 				return
@@ -460,6 +480,8 @@ local function setupAutoshoot()
 				mouseDown = false
 				gun:ResetFireRateRamp()
 				autoAimPos = nil
+				autoAimInstance = nil
+				autoSpotTracker:Reset()
 				continue
 			end
 
@@ -488,6 +510,8 @@ local function setupAutoshoot()
 				gun:ResetFireRateRamp()
 				isAutofiring = false
 				autoAimPos = nil
+				autoAimInstance = nil
+				autoSpotTracker:Reset()
 				continue
 			end
 
@@ -502,11 +526,15 @@ local function setupAutoshoot()
 					gun:ResetFireRateRamp()
 					isAutofiring = false
 					autoAimPos = nil
+					autoAimInstance = nil
+					autoSpotTracker:Reset()
 				end
 				continue
 			end
 
 			autoAimPos = aimPos or hit.Position
+			autoAimInstance = hit
+			if isMobile then autoSpotTracker:Track(hit) end
 			mouseDown = true
 			isAutofiring = true
 		end
@@ -533,7 +561,7 @@ local function refreshControllerKeybinds()
 		group = tool.Name,
 	})
 	Keybinds.addKeybind(Enum.KeyCode.ButtonR3, {
-		description = "Swap View",
+		description = "Ping / Swap View (Hold)",
 		group = tool.Name,
 	})
 end
@@ -628,6 +656,8 @@ local function onEquip()
 end
 
 local function onUnEquip()
+	autoAimInstance = nil
+	autoSpotTracker:Reset()
 	fireSessionId += 1
 	connections:RemoveAll()
 	gun:CancelControlledDrone(true)

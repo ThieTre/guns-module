@@ -28,6 +28,7 @@ local LocalPlayer = Players.LocalPlayer
 -- Instance ownership is cleared explicitly by _ReleaseCrosshair.
 local CROSSHAIR_OWNERS = {}
 local REMOTE_SETUPS = {}
+local WELD_SETUPS = {}
 local REMOTE_GENERATIONS = setmetatable({}, { __mode = "k" })
 
 -----------------------------------------------------------
@@ -1307,143 +1308,200 @@ function ClientGun._setupRemotes(gun: Tool | Model): boolean
 end
 
 function ClientGun._setupWelding(gun: Tool)
-	-- Resolve ownership
-
-	if not gun.Parent then
+	if WELD_SETUPS[gun] or not gun.Parent then
 		return
 	end
-
 	local owner
 	if gun.Parent:IsA("Backpack") then
 		owner = gun.Parent.Parent
 	else
 		owner = Players:GetPlayerFromCharacter(gun.Parent)
 	end
-	if not owner then
+	if not owner or owner.Parent ~= Players then
 		return
 	end
-	local character, humanoid =
-		PlayerUtils.waitForObjects(owner, "Character", "Humanoid")
-	local torso = character:WaitForChild("UpperTorso", 7)
-	if not torso then
-		LOG:Debug("Upper torso not found")
-		return
+	local state = { connections = ConnManager:new(), owner = owner }
+	WELD_SETUPS[gun] = state
+	local function isCurrent()
+		return WELD_SETUPS[gun] == state and owner.Parent == Players
+			and (gun:IsDescendantOf(owner) or (owner.Character ~= nil and gun.Parent == owner.Character))
+			and (not state.character or owner.Character == state.character)
 	end
-	-- Attempt to find open slot. It might take a little time for
-	-- an overwritten tool to be destroyed so we have to wrap this in
-	-- a timed loop
-	local weldFolder = InstModify.findOrCreateChild(character, "GunWelds", "Folder")
-	local slot = nil
-	for elapsed in MiscUtils.elapsed() do
-		task.wait()
-		-- Try to resolve slot
-		for _, slotOption in BACKPACK_SETTINGS.WeldSlots do
-			local existing = weldFolder:FindFirstChild(slotOption)
-			if existing then
-				-- Make sure tool still exists
-				local toolName = existing:GetAttribute("ToolName")
-				local isInBackpack = owner.Backpack:FindFirstChild(toolName)
-				local isInCharacter = character:FindFirstChild(toolName)
-				if not isInBackpack and not isInCharacter then
-					existing:Destroy()
-				else
+	local function cleanup()
+		if WELD_SETUPS[gun] ~= state then return end
+		WELD_SETUPS[gun] = nil
+		state.connections:RemoveAll()
+		local thread = state.thread
+		state.thread = nil
+		if thread and thread ~= coroutine.running() and coroutine.status(thread) ~= "dead" then
+			task.cancel(thread)
+		end
+		if state.model then
+			state.model:Destroy()
+			state.model = nil
+		end
+		state.character = nil
+	end
+	state.cleanup = cleanup
+	state.connections:Add("GunDestroyed", gun.Destroying:Connect(cleanup))
+	state.connections:Add("GunAncestry", gun.AncestryChanged:Connect(function()
+		if not isCurrent() then cleanup() end
+	end))
+	state.connections:Add("OwnerAncestry", owner.AncestryChanged:Connect(function()
+		if owner.Parent ~= Players then cleanup() end
+	end))
+	state.connections:Add("Character", owner:GetPropertyChangedSignal("Character"):Connect(function()
+		if state.character and state.character ~= owner.Character then
+			cleanup()
+			-- A surviving Backpack tool can be set up for the replacement character.
+			if owner.Parent == Players and gun:IsDescendantOf(owner) then
+				ClientGun._setupWelding(gun)
+			end
+		end
+	end))
+
+	local function initialize()
+
+		local character = owner.Character or owner.CharacterAdded:Wait()
+		state.character = character
+		if not isCurrent() then return end
+		state.connections:Add("CharacterDestroyed", character.Destroying:Connect(cleanup))
+		state.connections:Add("CharacterAncestry", character.AncestryChanged:Connect(function()
+			if not character:IsDescendantOf(workspace) then cleanup() end
+		end))
+		local humanoid = character:WaitForChild("Humanoid")
+		if not isCurrent() then return end
+		local torso = character:WaitForChild("UpperTorso", 7)
+		if not isCurrent() then return end
+		if not torso then
+			LOG:Debug("Upper torso not found")
+			return
+		end
+		-- Attempt to find open slot. It might take a little time for
+		-- an overwritten tool to be destroyed so we have to wrap this in
+		-- a timed loop
+		local weldFolder = InstModify.findOrCreateChild(character, "GunWelds", "Folder")
+		local slot = nil
+		for elapsed in MiscUtils.elapsed() do
+			task.wait()
+			if not isCurrent() then return end
+			-- Try to resolve slot
+			for _, slotOption in BACKPACK_SETTINGS.WeldSlots do
+				local existing = weldFolder:FindFirstChild(slotOption)
+				if existing then
+					-- Make sure tool still exists
+					local toolName = existing:GetAttribute("ToolName")
+					local isInBackpack = owner.Backpack:FindFirstChild(toolName)
+					local isInCharacter = character:FindFirstChild(toolName)
+					if not isInBackpack and not isInCharacter then
+						existing:Destroy()
+					else
+						continue
+					end
+				end
+
+				slot = slotOption
+				break
+			end
+
+			-- Evaluate loop
+			if slot then
+				break
+			end
+			if elapsed > 5 then
+				break
+			end
+		end
+
+		if not slot then
+			return
+		end
+
+		-- Create model and weld
+		local weldModel = gun:WaitForChild("Model", 15)
+		if not isCurrent() then return end
+		if not weldModel then
+			LOG:Warning("Failed to load gun model in time")
+			return
+		end
+		weldModel = weldModel:Clone()
+		state.model = weldModel
+		weldModel.Name = slot
+		weldModel:SetAttribute("ToolName", gun.Name)
+		for _, part: Part in pairs(weldModel:GetChildren()) do
+			part.CanCollide = false
+			part.CanTouch = false
+			part.CanQuery = false
+			for _, weld: WeldConstraint in pairs(part:GetChildren()) do
+				if weld:IsA("WeldConstraint") then
+					if weld.Part0 and weld.Part0.Name == "Handle" then
+						weld:Destroy()
+					end
+					if weld.Part1 and weld.Part1.Name == "Handle" then
+						weld:Destroy()
+					end
+				end
+			end
+		end
+		weldModel.PrimaryPart = nil
+		local weldModelAttachment =
+			InstModify.create("Attachment", weldModel:FindFirstChildWhichIsA("BasePart"))
+		local center = weldModel:GetPivot()
+		weldModelAttachment.WorldCFrame = center
+		local weld: WeldConstraint = Instance.new("RigidConstraint")
+		weld.Attachment0 = torso.BodyBackAttachment
+		weld.Attachment1 = weldModelAttachment
+		weld.Parent = weldModel
+		if slot == "Primary1" then
+			weldModelAttachment.WorldCFrame *= CFrame.new(0, 0.9, 0)
+			weld.Attachment1.CFrame *= CFrame.Angles(0, 0, math.rad(90))
+		elseif slot == "Primary2" then
+			weldModelAttachment.WorldCFrame *= CFrame.new(0, -0.5, 0)
+			weld.Attachment1.CFrame *= CFrame.Angles(0, 0, math.rad(90))
+		end
+		weldModel.Parent = weldFolder
+
+		local function setTransparency(transparency: number)
+			for _, d in weldModel:GetDescendants() do
+				if not d:IsA("BasePart") and not d:IsA("Texture") then
 					continue
 				end
-			end
-
-			slot = slotOption
-			break
-		end
-
-		-- Evaluate loop
-		if slot then
-			break
-		end
-		if elapsed > 5 then
-			break
-		end
-	end
-
-	if not slot then
-		return
-	end
-
-	-- Create model and weld
-	local weldModel = gun:WaitForChild("Model", 15)
-	if not weldModel then
-		LOG:Warning("Failed to load gun model in time")
-		return
-	end
-	weldModel = weldModel:Clone()
-	weldModel.Name = slot
-	weldModel:SetAttribute("ToolName", gun.Name)
-	for _, part: Part in pairs(weldModel:GetChildren()) do
-		part.CanCollide = false
-		part.CanTouch = false
-		part.CanQuery = false
-		for _, weld: WeldConstraint in pairs(part:GetChildren()) do
-			if weld:IsA("WeldConstraint") then
-				if weld.Part0 and weld.Part0.Name == "Handle" then
-					weld:Destroy()
-				end
-				if weld.Part1 and weld.Part1.Name == "Handle" then
-					weld:Destroy()
-				end
+				d.Transparency = transparency
 			end
 		end
-	end
-	weldModel.PrimaryPart = nil
-	local weldModelAttachment =
-		InstModify.create("Attachment", weldModel:FindFirstChildWhichIsA("BasePart"))
-	local center = weldModel:GetPivot()
-	weldModelAttachment.WorldCFrame = center
-	local weld: WeldConstraint = Instance.new("RigidConstraint")
-	weld.Attachment0 = character:WaitForChild("UpperTorso").BodyBackAttachment
-	weld.Attachment1 = weldModelAttachment
-	weld.Parent = weldModel
-	if slot == "Primary1" then
-		weldModelAttachment.WorldCFrame *= CFrame.new(0, 0.9, 0)
-		weld.Attachment1.CFrame *= CFrame.Angles(0, 0, math.rad(90))
-	elseif slot == "Primary2" then
-		weldModelAttachment.WorldCFrame *= CFrame.new(0, -0.5, 0)
-		weld.Attachment1.CFrame *= CFrame.Angles(0, 0, math.rad(90))
-	end
-	weldModel.Parent = weldFolder
-
-	local function setTransparency(transparency: number)
-		for _, d in weldModel:GetDescendants() do
-			if not d:IsA("BasePart") and not d:IsA("Texture") then
-				continue
+		local function evaluateWeld()
+			if not isCurrent() or not character.Parent then
+				cleanup()
+			elseif gun.Parent == character or humanoid.Sit then
+				setTransparency(1)
+			else
+				setTransparency(torso.Transparency)
 			end
-			d.Transparency = transparency
 		end
-	end
-
-	local function evaluateWeld()
-		if not gun.Parent then
-			weldModel:Destroy()
-		elseif gun.Parent == character then
-			setTransparency(1)
-		else
-			setTransparency(torso.Transparency)
-		end
-	end
-
-	evaluateWeld()
-
-	humanoid:GetPropertyChangedSignal("Sit"):Connect(function()
-		if humanoid.Sit then
-			setTransparency(1)
-		else
-			setTransparency(torso.Transparency)
-		end
-	end)
-
-	gun:GetPropertyChangedSignal("Parent"):Connect(evaluateWeld)
-
-	torso:GetPropertyChangedSignal("Transparency"):Connect(function()
+		state.connections:Add("CosmeticDestroyed", weldModel.Destroying:Connect(cleanup))
+		state.connections:Add("Sit", humanoid:GetPropertyChangedSignal("Sit"):Connect(evaluateWeld))
+		state.connections:Add("Parent", gun:GetPropertyChangedSignal("Parent"):Connect(evaluateWeld))
+		state.connections:Add("Transparency", torso:GetPropertyChangedSignal("Transparency"):Connect(evaluateWeld))
 		evaluateWeld()
+	end
+
+	-- Own the thread before it can yield while resolving streamed dependencies.
+	state.thread = task.defer(function()
+		local success, err = pcall(initialize)
+		state.thread = nil
+		if not success or not state.model then
+			cleanup()
+		end
+		if not success then
+			LOG:Warning("Gun welding setup failed for %s: %s", gun.Name, err)
+		end
 	end)
 end
+
+Players.PlayerRemoving:Connect(function(player)
+	for _, state in WELD_SETUPS do
+		if state.owner == player then state.cleanup() end
+	end
+end)
 
 return ClientGun

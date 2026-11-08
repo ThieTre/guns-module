@@ -258,13 +258,18 @@ end
 local autoAimInstance
 local autoAimPos: Vector3? = nil
 local function recordAutoShot(hit)
-	if not isMobile or not PlayerSettings:Lookup("AutoSpotEnabled", true)
-		or not PlayerSettings:Lookup("AutoShoot", true) then
+	if
+		not isMobile
+		or not PlayerSettings:Lookup("AutoSpotEnabled", true)
+		or not PlayerSettings:Lookup("AutoShoot", true)
+	then
 		autoSpotTracker:Reset()
 		return
 	end
 	local target = autoSpotTracker:RecordShot(hit)
-	if target then CombatMarkers.AutoSpotRequested:Fire(target) end
+	if target then
+		CombatMarkers.AutoSpotRequested:Fire(target)
+	end
 end
 
 local function onHeartbeat()
@@ -284,7 +289,9 @@ local function onHeartbeat()
 	end
 
 	if not mouseDown or isFiring or isProjectileLimitBlocked then
-		if isProjectileLimitBlocked or (not mouseDown and not isFiring) then autoSpotTracker:Reset() end
+		if isProjectileLimitBlocked or (not mouseDown and not isFiring) then
+			autoSpotTracker:Reset()
+		end
 		if not isFiring and (not mouseDown or isProjectileLimitBlocked) then
 			gun:ResetFireRateRamp()
 		end
@@ -308,7 +315,11 @@ local function onHeartbeat()
 
 	local autoFireHit = autoAimInstance
 	local ok, firedOrErr = pcall(gun.Fire, gun, pos)
-	if ok and firedOrErr then recordAutoShot(autoFireHit) else autoSpotTracker:Reset() end
+	if ok and firedOrErr then
+		recordAutoShot(autoFireHit)
+	else
+		autoSpotTracker:Reset()
+	end
 	if not ok then
 		LOG:Error(
 			"Gun failed to fire for client %s: %s",
@@ -404,7 +415,12 @@ local function setupDesktop()
 	connections:Add(
 		"inputBegan",
 		UIS.InputBegan:Connect(function(input, gp)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 and InputUtils.isAltDown() then return end
+			if
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				and InputUtils.isAltDown()
+			then
+				return
+			end
 			local key = input.KeyCode
 			local allowConsoleInput = (
 				key == Enum.KeyCode.ButtonR2
@@ -534,7 +550,9 @@ local function setupAutoshoot()
 
 			autoAimPos = aimPos or hit.Position
 			autoAimInstance = hit
-			if isMobile then autoSpotTracker:Track(hit) end
+			if isMobile then
+				autoSpotTracker:Track(hit)
+			end
 			mouseDown = true
 			isAutofiring = true
 		end
@@ -561,7 +579,7 @@ local function refreshControllerKeybinds()
 		group = tool.Name,
 	})
 	Keybinds.addKeybind(Enum.KeyCode.ButtonR3, {
-		description = "Ping / Swap View (Hold)",
+		description = "Ping / View (hold)",
 		group = tool.Name,
 	})
 end

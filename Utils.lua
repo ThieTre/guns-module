@@ -123,4 +123,8 @@ function Utils.getEffectiveRPM(settings: {})
 	return math.round((settings.Gun.Capacity / cycle) * 60)
 end
 
+if game:GetService("RunService"):IsServer() then
+	require(script.Parent.Commands)(Utils)
+end
+
 return Utils

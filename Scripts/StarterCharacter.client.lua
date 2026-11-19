@@ -22,41 +22,41 @@ local GREEN = Color3.new(0.4, 1, 0.541176)
 
 scope.Visible = true
 
-local function round(n)
-	return math.floor(n + 0.5)
-end
-
 local function setUi()
-	-- Integer pixel sizes
-	local scopeW, scopeH = round(scope.AbsoluteSize.X), round(scope.AbsoluteSize.Y)
-	local retW, retH = round(ret.AbsoluteSize.X), round(ret.AbsoluteSize.Y)
+	local scopeW, scopeH = scope.AbsoluteSize.X, scope.AbsoluteSize.Y
+	if scopeW <= 0 or scopeH <= 0 then
+		return
+	end
+	local retW, retH = ret.AbsoluteSize.X, ret.AbsoluteSize.Y
 
-	local retX = math.max(0, math.floor((scopeW - retW) / 2))
-	local retY = math.max(0, math.floor((scopeH - retH) / 2))
-	local retRight = math.min(scopeW, retX + retW)
-	local retBottom = math.min(scopeH, retY + retH)
+	-- Share the image's exact edges; overlapping translucent layers creates dark seams.
+	-- Scale coordinates keep screen-pixel measurements valid under ancestor UIScales.
+	local retX = math.clamp((scopeW - retW) / (2 * scopeW), 0, 0.5)
+	local retY = math.clamp((scopeH - retH) / (2 * scopeH), 0, 0.5)
+	local retRight = 1 - retX
+	local retBottom = 1 - retY
 	local centralW = math.max(0, retRight - retX)
 
-	ret.AnchorPoint = Vector2.zero
-	ret.Position = UDim2.fromOffset(retX, retY)
+	ret.AnchorPoint = Vector2.new(0.5, 0.5)
+	ret.Position = UDim2.fromScale(0.5, 0.5)
 
 	-- Left / Right
 	left.AnchorPoint = Vector2.new(0, 0)
-	left.Position = UDim2.fromOffset(0, 0)
-	left.Size = UDim2.fromOffset(retX, scopeH)
+	left.Position = UDim2.fromScale(0, 0)
+	left.Size = UDim2.fromScale(retX, 1)
 
 	right.AnchorPoint = Vector2.new(0, 0)
-	right.Position = UDim2.fromOffset(retRight, 0)
-	right.Size = UDim2.fromOffset(math.max(0, scopeW - retRight), scopeH)
+	right.Position = UDim2.fromScale(retRight, 0)
+	right.Size = UDim2.fromScale(1 - retRight, 1)
 
 	-- Top / Bottom (only between left/right)
 	top.AnchorPoint = Vector2.new(0, 0)
-	top.Position = UDim2.fromOffset(retX, 0)
-	top.Size = UDim2.fromOffset(centralW, retY)
+	top.Position = UDim2.fromScale(retX, 0)
+	top.Size = UDim2.fromScale(centralW, retY)
 
 	bottom.AnchorPoint = Vector2.new(0, 0)
-	bottom.Position = UDim2.fromOffset(retX, retBottom)
-	bottom.Size = UDim2.fromOffset(centralW, math.max(0, scopeH - retBottom))
+	bottom.Position = UDim2.fromScale(retX, retBottom)
+	bottom.Size = UDim2.fromScale(centralW, 1 - retBottom)
 end
 
 local function onFirePointChange()

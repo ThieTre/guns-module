@@ -464,6 +464,7 @@ function ServerGun:DirectFireAt(
 			local accepted, currentDistance =
 				self.__servercaster.DirectCast(self, dealer, pos, {
 					guidedTarget = options.guidedTarget,
+					sourceContext = options.sourceContext,
 					ignoreProjectileLimit = true,
 					observerFireCallback = function(observerCastDistance: number?)
 						if observerFireBroadcasted then

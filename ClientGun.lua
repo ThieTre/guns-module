@@ -455,8 +455,8 @@ function ClientGun:Reload(force: boolean?)
 		return false
 	end
 
-	local canReload = force
-		or (not self.isReloading and self.currentAmmo ~= self.settings.Gun.Capacity)
+	local canReload = not self.isReloading
+		and (force or self.currentAmmo ~= self.settings.Gun.Capacity)
 	if not canReload then
 		return false
 	end
@@ -469,6 +469,9 @@ function ClientGun:Reload(force: boolean?)
 end
 
 function ClientGun:_ReloadFunctionality()
+	if self.isReloading then
+		return false
+	end
 	if not self.settings.Gun.AllowAimingOnReload then
 		self:ToggleAim(false)
 		self.canAim = false
@@ -477,12 +480,19 @@ function ClientGun:_ReloadFunctionality()
 	self.isReloading = true
 	self.object:SetAttribute("IsReloading", true)
 	self:_RefreshReloadIndicator()
-	local newAmmo = self.remoteFunction:InvokeServer("Reload", true)
+	local success, res = pcall(function()
+		return self.remoteFunction:InvokeServer("Reload", true)
+	end)
 	self.isReloading = false
 	self.object:SetAttribute("IsReloading", false)
 	self:_RefreshReloadIndicator()
 
 	self.canAim = true
+	if not success then
+		LOG:Warning("Reload request failed: %s", res)
+		return false
+	end
+	local newAmmo = res
 	if newAmmo == self.currentAmmo then
 		return false
 	end

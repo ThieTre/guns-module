@@ -251,39 +251,43 @@ function ServerGun:ResetFireRateRamp()
 	self.fireRateRampStart = nil
 end
 
-function ServerGun:_SetupROFBucket()
-	local gunSettings = self.settings.Gun
+function ServerGun:_GetROFBucketMaxSize(fireRate: number?): (number, number)
 	local refillWindow = SETTINGS.ROFBucket.RefillRate
 	local leaniance = SETTINGS.ROFBucket.Leniance
-	local trueFireRate = gunSettings.FireRate
+	local trueFireRate = fireRate or self.settings.Gun.FireRate
+	local burstSize = 1
 	if self:_UsesBurstFireRate() then
-		local burstSize = self:_GetBurstSize()
-		local burstCycleDuration = self:_GetFireCooldownDuration()
+		burstSize = self:_GetBurstSize()
+		local burstCycleDuration = 1 / trueFireRate
 			+ math.max(0, burstSize - 1) * self:_GetBurstDelay()
 
 		trueFireRate = burstSize / burstCycleDuration
 		leaniance *= 1.05
 	end
-	self.bucketSize = 0
-	self.bucketRefillWindow = refillWindow
-	self.bucketResetAt = tick() + refillWindow
-	self.maxBucketSize = (trueFireRate * refillWindow * (leaniance + 1))
+	local refillRate = trueFireRate * (leaniance + 1) * self.bulletsPerShot
+	-- Buffer network batching in addition to one complete shot/burst.
+	local maxSize = (trueFireRate * refillWindow + burstSize)
+		* (leaniance + 1)
 		* self.bulletsPerShot
+	return maxSize, refillRate
+end
+
+function ServerGun:_SetupROFBucket()
+	self.bucketSize = 0
+	self.bucketLastRefresh = tick()
+	self.maxBucketSize, self.bucketRefillRate = self:_GetROFBucketMaxSize()
 end
 
 function ServerGun:_RefreshROFBucket(now: number?)
 	now = now or tick()
-	local bucketResetAt = self.bucketResetAt
-	local refillWindow = self.bucketRefillWindow
-	if not bucketResetAt or not refillWindow then
+	local lastRefresh = self.bucketLastRefresh
+	local refillRate = self.bucketRefillRate
+	if not lastRefresh or not refillRate then
 		return
 	end
-	if now < bucketResetAt then
-		return
-	end
-
-	self.bucketSize = 0
-	self.bucketResetAt = now + refillWindow
+	-- Drain continuously so packet batching and window phase do not reject legal fire.
+	self.bucketSize = math.max(0, self.bucketSize - (now - lastRefresh) * refillRate)
+	self.bucketLastRefresh = now
 end
 
 function ServerGun:SetCurrentAmmo(value: number)
@@ -382,10 +386,24 @@ function ServerGun:_OnHitEvent(player, ...)
 	self.__servercaster._OnHitEvent(self, player, ...)
 end
 
-function ServerGun:_CheckROF(): boolean
+function ServerGun:_CheckROF(castCount: number?): boolean
 	self:_RefreshROFBucket()
-	if self.bucketSize > self.maxBucketSize then
-		LOG:Warning("Cast event rejected due ROF violation")
+	local maxSize, refillRate = self:_GetROFBucketMaxSize()
+	if self.bucketRefillRate and refillRate ~= self.bucketRefillRate then
+		-- Preserve consumed buffer time when a fire-rate modifier changes.
+		self.bucketSize *= refillRate / self.bucketRefillRate
+	end
+	self.maxBucketSize = maxSize
+	self.bucketRefillRate = refillRate
+	castCount = castCount or 1
+	if self.bucketSize + castCount > self.maxBucketSize + FLOAT_TOLERANCE then
+		LOG:Warning(
+			"Cast event rejected due ROF violation (%s: %.2f + %s > %.2f casts)",
+			self.object.Name,
+			self.bucketSize,
+			castCount,
+			self.maxBucketSize
+		)
 		return false
 	end
 	return true
@@ -425,7 +443,7 @@ function ServerGun:DirectFireAt(
 		self:_RequestReload()
 		return false
 	end
-	if not options.skipROFCheck and not self:_CheckROF() then
+	if not options.skipROFCheck and not self:_CheckROF(self.bulletsPerShot) then
 		return false
 	end
 	if not self:PrepareProjectileLaunch(true) then
